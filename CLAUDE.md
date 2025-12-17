@@ -107,11 +107,22 @@ uv run mypy src/
 ## Deployment
 
 - Docker image: `us-central1-docker.pkg.dev/cortex-gmail/cortex/gateway:latest`
-- Stack: `cortex-gateway` on Hades via Portainer
-- Traefik route: `cortex.hades.local`
+- Stack: `cortex-gateway` (ID 38) on Hades via Portainer
+- Traefik route: `cortex.hades.local` (internal port 81)
+- Ports: 8097 (API), 8096 (metrics)
+
+### Access
+
+```bash
+# Direct access
+curl http://10.5.2.21:8097/health
+
+# Via Traefik (internal network)
+curl -H "Host: cortex.hades.local" http://10.5.2.21:81/health
+```
 
 ### Redeploy
 
 ```bash
-~/.claude/skills/portainer/scripts/redeploy-stack.sh <stack-id> 11 "" true
+~/.claude/skills/portainer/scripts/redeploy-stack.sh 38 11 /path/to/gateway-stack.yml true
 ```
