@@ -67,12 +67,14 @@ def list_failed():
 
     results = postgres.execute_query(query, tuple(params))
 
-    return jsonify({
-        "failed_jobs": results,
-        "limit": limit,
-        "offset": offset,
-        "count": len(results),
-    })
+    return jsonify(
+        {
+            "failed_jobs": results,
+            "limit": limit,
+            "offset": offset,
+            "count": len(results),
+        }
+    )
 
 
 @queue_bp.route("/failed/<int:job_id>/retry", methods=["POST"])
@@ -90,9 +92,7 @@ def retry_failed(job_id: int) -> Response | tuple[Response, int]:
         return jsonify({"error": "Job not found"}), 404
 
     if job["status"] != "failed":
-        return jsonify({
-            "error": f"Job is not failed (current status: {job['status']})"
-        }), 400
+        return jsonify({"error": f"Job is not failed (current status: {job['status']})"}), 400
 
     # Reset to pending
     update_query = """
@@ -102,11 +102,13 @@ def retry_failed(job_id: int) -> Response | tuple[Response, int]:
     """
     postgres.execute_update(update_query, (job_id,))
 
-    return jsonify({
-        "message": "Job queued for retry",
-        "job_id": job_id,
-        "queue_name": job["queue_name"],
-    })
+    return jsonify(
+        {
+            "message": "Job queued for retry",
+            "job_id": job_id,
+            "queue_name": job["queue_name"],
+        }
+    )
 
 
 @queue_bp.route("/failed/<int:job_id>", methods=["DELETE"])
@@ -124,17 +126,20 @@ def delete_failed(job_id: int) -> Response | tuple[Response, int]:
         return jsonify({"error": "Job not found"}), 404
 
     if job["status"] != "failed":
-        return jsonify({
-            "error": f"Can only delete failed jobs (current status: {job['status']})"
-        }), 400
+        return (
+            jsonify({"error": f"Can only delete failed jobs (current status: {job['status']})"}),
+            400,
+        )
 
     delete_query = "DELETE FROM queue WHERE id = %s"
     postgres.execute_update(delete_query, (job_id,))
 
-    return jsonify({
-        "message": "Job deleted",
-        "job_id": job_id,
-    })
+    return jsonify(
+        {
+            "message": "Job deleted",
+            "job_id": job_id,
+        }
+    )
 
 
 @queue_bp.route("/failed/retry-all", methods=["POST"])
@@ -151,8 +156,10 @@ def retry_all_failed():
     """
     count = postgres.execute_update(update_query, (queue_name,))
 
-    return jsonify({
-        "message": f"Retried {count} failed jobs",
-        "queue_name": queue_name,
-        "count": count,
-    })
+    return jsonify(
+        {
+            "message": f"Retried {count} failed jobs",
+            "queue_name": queue_name,
+            "count": count,
+        }
+    )

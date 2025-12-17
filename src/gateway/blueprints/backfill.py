@@ -68,14 +68,16 @@ def trigger_backfill():
 
     count = postgres.execute_update(query, tuple(params))
 
-    return jsonify({
-        "message": f"Enqueued {count} emails for backfill",
-        "queue": queue_name,
-        "days": days,
-        "label": label,
-        "priority": priority,
-        "count": count,
-    })
+    return jsonify(
+        {
+            "message": f"Enqueued {count} emails for backfill",
+            "queue": queue_name,
+            "days": days,
+            "label": label,
+            "priority": priority,
+            "count": count,
+        }
+    )
 
 
 @backfill_bp.route("/status")
@@ -124,8 +126,10 @@ def cancel_backfill():
     """
     count = postgres.execute_update(update_query, (queue_name,))
 
-    return jsonify({
-        "message": f"Cancelled {count} backfill jobs",
-        "queue": queue_name,
-        "count": count,
-    })
+    return jsonify(
+        {
+            "message": f"Cancelled {count} backfill jobs",
+            "queue": queue_name,
+            "count": count,
+        }
+    )

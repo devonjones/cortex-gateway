@@ -41,12 +41,14 @@ def list_emails():
 
     results = postgres.execute_query(query, tuple(params))
 
-    return jsonify({
-        "emails": results,
-        "limit": limit,
-        "offset": offset,
-        "count": len(results),
-    })
+    return jsonify(
+        {
+            "emails": results,
+            "limit": limit,
+            "offset": offset,
+            "count": len(results),
+        }
+    )
 
 
 @emails_bp.route("/<gmail_id>")
@@ -130,7 +132,9 @@ def get_stats():
     # DuckDB stats
     duckdb_stats = duckdb.get_stats()
 
-    return jsonify({
-        "postgres": counts,
-        "duckdb": duckdb_stats,
-    })
+    return jsonify(
+        {
+            "postgres": counts,
+            "duckdb": duckdb_stats,
+        }
+    )

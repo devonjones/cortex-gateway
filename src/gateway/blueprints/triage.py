@@ -49,11 +49,13 @@ def triage_stats():
     """
     methods = postgres.execute_query(method_query)
 
-    return jsonify({
-        "by_classifier": by_rule,
-        "recent_hourly": recent,
-        "methods": {row["method"]: row["count"] for row in methods},
-    })
+    return jsonify(
+        {
+            "by_classifier": by_rule,
+            "recent_hourly": recent,
+            "methods": {row["method"]: row["count"] for row in methods},
+        }
+    )
 
 
 @triage_bp.route("/rerun", methods=["POST"])
@@ -76,9 +78,7 @@ def rerun_triage():
     priority = data.get("priority", -100)
 
     if not gmail_ids and not label:
-        return jsonify({
-            "error": "Must specify either gmail_ids or label filter"
-        }), 400
+        return jsonify({"error": "Must specify either gmail_ids or label filter"}), 400
 
     # Build insert query
     if gmail_ids:
@@ -128,15 +128,17 @@ def rerun_triage():
 
     count = postgres.execute_update(query, tuple(params))
 
-    return jsonify({
-        "message": f"Enqueued {count} emails for triage rerun",
-        "gmail_ids": gmail_ids if gmail_ids else None,
-        "label": label,
-        "days": days if not gmail_ids else None,
-        "force": force,
-        "priority": priority,
-        "count": count,
-    })
+    return jsonify(
+        {
+            "message": f"Enqueued {count} emails for triage rerun",
+            "gmail_ids": gmail_ids if gmail_ids else None,
+            "label": label,
+            "days": days if not gmail_ids else None,
+            "force": force,
+            "priority": priority,
+            "count": count,
+        }
+    )
 
 
 @triage_bp.route("/classifications")
@@ -179,9 +181,11 @@ def list_classifications():
 
     results = postgres.execute_query(query, tuple(params))
 
-    return jsonify({
-        "classifications": results,
-        "limit": limit,
-        "offset": offset,
-        "count": len(results),
-    })
+    return jsonify(
+        {
+            "classifications": results,
+            "limit": limit,
+            "offset": offset,
+            "count": len(results),
+        }
+    )
