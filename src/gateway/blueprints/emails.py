@@ -1,7 +1,6 @@
 """Email-related API endpoints."""
 
 import json
-from typing import Any
 
 from flask import Blueprint, Response, jsonify, request
 
