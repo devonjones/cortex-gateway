@@ -15,9 +15,12 @@ COPY src/ ./src/
 # Install dependencies
 RUN uv sync --frozen --no-dev
 
-# Create non-root user
-RUN useradd -r -s /bin/false appuser && chown -R appuser:appuser /app
+# Create non-root user with home directory
+RUN useradd -r -m -s /bin/false appuser && chown -R appuser:appuser /app
 USER appuser
+
+# Set UV cache in writable location
+ENV UV_CACHE_DIR=/home/appuser/.cache/uv
 
 # Expose ports
 EXPOSE 8080 8001
