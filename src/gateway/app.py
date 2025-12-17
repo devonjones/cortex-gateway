@@ -6,7 +6,7 @@ from cortex_utils.api import MetricsMiddleware, health_bp, register_health_check
 from cortex_utils.metrics import start_metrics_server
 from flask import Flask
 
-from gateway.blueprints import backfill_bp, emails_bp, queue_bp, triage_bp
+from gateway.blueprints import backfill_bp, emails_bp, queue_bp, sync_bp, triage_bp
 from gateway.config import config
 from gateway.services.postgres import get_connection, init_pool
 
@@ -26,6 +26,7 @@ def create_app() -> Flask:
     app.register_blueprint(queue_bp, url_prefix="/queue")
     app.register_blueprint(backfill_bp, url_prefix="/backfill")
     app.register_blueprint(triage_bp, url_prefix="/triage")
+    app.register_blueprint(sync_bp, url_prefix="/sync")
 
     # Register health checks
     register_health_check(app, check_postgres)
