@@ -25,5 +25,5 @@ ENV UV_CACHE_DIR=/home/appuser/.cache/uv
 # Expose ports
 EXPOSE 8080 8001
 
-# Run with gunicorn
-CMD ["uv", "run", "gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "gateway.app:create_app()"]
+# Run with gunicorn (single worker to avoid metrics port conflict)
+CMD ["uv", "run", "gunicorn", "-w", "1", "-b", "0.0.0.0:8080", "gateway.app:create_app()"]
