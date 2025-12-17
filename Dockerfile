@@ -20,4 +20,4 @@ USER appuser
 EXPOSE 8080 8001
 
 # Run with gunicorn
-CMD ["uv", "run", "gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "gateway.app:application"]
+CMD ["uv", "run", "gunicorn", "-w", "4", "-b", "0.0.0.0:8080", "gateway.app:create_app()"]

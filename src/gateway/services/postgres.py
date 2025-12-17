@@ -3,6 +3,7 @@
 from typing import Any
 
 from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 
 from gateway.config import config
 
@@ -55,10 +56,9 @@ class ConnectionContext:
 def execute_query(query: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
     """Execute a query and return results as list of dicts."""
     with ConnectionContext() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(query, params)
-            columns = [desc[0] for desc in cur.description] if cur.description else []
-            return [dict(zip(columns, row)) for row in cur.fetchall()]
+            return cur.fetchall()
 
 
 def execute_one(query: str, params: tuple[Any, ...] | None = None) -> dict[str, Any] | None:

@@ -1,5 +1,6 @@
 """Backfill API endpoints for historical email processing."""
 
+import json
 from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
@@ -7,6 +8,9 @@ from flask import Blueprint, jsonify, request
 from gateway.services import postgres
 
 backfill_bp = Blueprint("backfill", __name__)
+
+# Valid queue names for backfill operations
+VALID_QUEUES = ("triage", "parse", "attachment")
 
 
 @backfill_bp.route("/", methods=["POST"])
@@ -26,7 +30,7 @@ def trigger_backfill():
     label = data.get("label")
     priority = data.get("priority", -100)  # Low priority for backfill
 
-    if queue_name not in ("triage", "parse", "attachment"):
+    if queue_name not in VALID_QUEUES:
         return jsonify({"error": f"Invalid queue: {queue_name}"}), 400
 
     # Calculate date cutoff
@@ -49,7 +53,7 @@ def trigger_backfill():
 
     if label:
         query += " AND er.label_ids @> %s::jsonb"
-        params.append(f'["{label}"]')
+        params.append(json.dumps([label]))
 
     # Avoid duplicates
     query += """

@@ -1,5 +1,6 @@
 """Triage-related API endpoints."""
 
+import json
 from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
@@ -112,7 +113,7 @@ def rerun_triage():
             WHERE er.created_at >= %s
             AND er.label_ids @> %s::jsonb
         """
-        params = [priority, cutoff.isoformat(), f'["{label}"]']
+        params = [priority, cutoff.isoformat(), json.dumps([label])]
 
     # Avoid duplicates unless force
     if not force:

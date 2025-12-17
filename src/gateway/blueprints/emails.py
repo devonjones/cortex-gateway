@@ -1,5 +1,6 @@
 """Email-related API endpoints."""
 
+import json
 from typing import Any
 
 from flask import Blueprint, Response, jsonify, request
@@ -34,7 +35,7 @@ def list_emails():
 
     if label:
         query += " WHERE er.label_ids @> %s::jsonb"
-        params.append(f'["{label}"]')
+        params.append(json.dumps([label]))
 
     query += " ORDER BY ep.date DESC NULLS LAST LIMIT %s OFFSET %s"
     params.extend([str(limit), str(offset)])
@@ -119,8 +120,8 @@ def get_stats():
     count_query = """
         SELECT
             COUNT(*) as total_emails,
-            COUNT(ep.gmail_id) as parsed_emails,
-            COUNT(c.gmail_id) as classified_emails
+            COUNT(DISTINCT ep.gmail_id) as parsed_emails,
+            COUNT(DISTINCT c.gmail_id) as classified_emails
         FROM emails_raw er
         LEFT JOIN emails_parsed ep ON er.gmail_id = ep.gmail_id
         LEFT JOIN classifications c ON er.gmail_id = c.gmail_id

@@ -1,5 +1,6 @@
 """Flask application factory for Cortex Gateway."""
 
+import httpx
 import structlog
 from cortex_utils.api import MetricsMiddleware, health_bp, register_health_check
 from cortex_utils.metrics import start_metrics_server
@@ -54,24 +55,22 @@ def check_postgres() -> tuple[str, bool]:
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
         return ("postgres", True)
-    except Exception:
+    except Exception as e:
+        logger.warning("postgres_health_check_failed", error=e)
         return ("postgres", False)
 
 
 def check_duckdb() -> tuple[str, bool]:
     """Health check for DuckDB API."""
-    import httpx
-
     try:
         resp = httpx.get(f"{config.duckdb_api_url}/health", timeout=5.0)
         return ("duckdb", resp.status_code == 200)
-    except Exception:
+    except httpx.RequestError as e:
+        logger.warning("duckdb_health_check_failed", error=e)
         return ("duckdb", False)
 
 
-# For gunicorn: gunicorn -w 4 -b 0.0.0.0:8080 'gateway.app:create_app()'
-application = create_app()
-
-
 if __name__ == "__main__":
+    # For local development only
+    application = create_app()
     application.run(host=config.host, port=config.port, debug=True)
