@@ -22,10 +22,10 @@ def list_emails():
     query = """
         SELECT
             er.gmail_id,
-            ep.from_address,
-            ep.to_addresses,
+            ep.from_addr,
+            ep.to_addrs,
             ep.subject,
-            ep.date,
+            ep.date_header,
             er.label_ids
         FROM emails_raw er
         LEFT JOIN emails_parsed ep ON er.gmail_id = ep.gmail_id
@@ -36,7 +36,7 @@ def list_emails():
         query += " WHERE er.label_ids @> %s::jsonb"
         params.append(json.dumps([label]))
 
-    query += " ORDER BY ep.date DESC NULLS LAST LIMIT %s OFFSET %s"
+    query += " ORDER BY ep.date_header DESC NULLS LAST LIMIT %s OFFSET %s"
     params.extend([str(limit), str(offset)])
 
     results = postgres.execute_query(query, tuple(params))
@@ -62,14 +62,15 @@ def get_email(gmail_id: str) -> Response | tuple[Response, int]:
             er.headers,
             er.internal_date,
             er.created_at,
-            ep.from_address,
-            ep.to_addresses,
-            ep.cc_addresses,
+            ep.from_addr,
+            ep.from_name,
+            ep.to_addrs,
+            ep.cc_addrs,
             ep.subject,
-            ep.date,
+            ep.date_header,
             ep.message_id,
             ep.in_reply_to,
-            ep.references
+            ep.refs
         FROM emails_raw er
         LEFT JOIN emails_parsed ep ON er.gmail_id = ep.gmail_id
         WHERE er.gmail_id = %s
