@@ -49,9 +49,7 @@ def trigger_sync_backfill():
             query = f"after:{after_date.strftime('%Y/%m/%d')}"
         except ValueError:
             return (
-                jsonify(
-                    {"error": f"Invalid date format: '{after}'. Expected YYYY-MM-DD"}
-                ),
+                jsonify({"error": f"Invalid date format: '{after}'. Expected YYYY-MM-DD"}),
                 400,
             )
 
@@ -61,9 +59,7 @@ def trigger_sync_backfill():
         VALUES (%s, %s, %s)
         RETURNING id, status, query, days, after_date, created_at
     """
-    results = postgres.execute_query(
-        insert_query, (query, days, after_date.isoformat())
-    )
+    results = postgres.execute_query(insert_query, (query, days, after_date.isoformat()))
 
     if not results:
         return jsonify({"error": "Failed to create backfill job"}), 500
@@ -77,9 +73,7 @@ def trigger_sync_backfill():
                 "query": job["query"],
                 "days": job["days"],
                 "after_date": str(job["after_date"]) if job["after_date"] else None,
-                "created_at": job["created_at"].isoformat()
-                if job["created_at"]
-                else None,
+                "created_at": job["created_at"].isoformat() if job["created_at"] else None,
             }
         ),
         201,
@@ -126,15 +120,9 @@ def list_sync_backfill_jobs():
                 "stored": row["stored"],
                 "updated": row["updated"],
                 "error": row["error"],
-                "created_at": row["created_at"].isoformat()
-                if row["created_at"]
-                else None,
-                "started_at": row["started_at"].isoformat()
-                if row["started_at"]
-                else None,
-                "completed_at": row["completed_at"].isoformat()
-                if row["completed_at"]
-                else None,
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
             }
         )
 
@@ -169,9 +157,7 @@ def get_sync_backfill_job(job_id: str):
             "error": row["error"],
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             "started_at": row["started_at"].isoformat() if row["started_at"] else None,
-            "completed_at": row["completed_at"].isoformat()
-            if row["completed_at"]
-            else None,
+            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
         }
     )
 
