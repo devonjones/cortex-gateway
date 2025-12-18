@@ -12,9 +12,9 @@ import httpx
 DEFAULT_GATEWAY_URL = os.environ.get("CORTEX_GATEWAY_URL", "http://10.5.2.21:8097")
 
 
-def get_client() -> httpx.Client:
+def get_client(url: str) -> httpx.Client:
     """Get HTTP client for gateway."""
-    return httpx.Client(base_url=DEFAULT_GATEWAY_URL, timeout=30.0)
+    return httpx.Client(base_url=url, timeout=30.0)
 
 
 def output_json(data: Any) -> None:
@@ -75,7 +75,7 @@ def emails() -> None:
 @click.pass_context
 def emails_list(ctx: click.Context, limit: int, offset: int, label: str | None) -> None:
     """List emails."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if label:
             params["label"] = label
@@ -93,7 +93,7 @@ def emails_list(ctx: click.Context, limit: int, offset: int, label: str | None) 
 @click.pass_context
 def emails_get(ctx: click.Context, gmail_id: str) -> None:
     """Get email details."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}")
         data = resp.json()
 
@@ -105,13 +105,13 @@ def emails_get(ctx: click.Context, gmail_id: str) -> None:
 @click.pass_context
 def emails_body(ctx: click.Context, gmail_id: str) -> None:
     """Get email body."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}/body")
+        if resp.status_code >= 400:
+            click.echo(f"Error: {resp.text}", err=True)
+            sys.exit(1)
         data = resp.json()
 
-    if "error" in data:
-        click.echo(f"Error: {data['error']}", err=True)
-        sys.exit(1)
     output_json(data)
 
 
@@ -120,13 +120,12 @@ def emails_body(ctx: click.Context, gmail_id: str) -> None:
 @click.pass_context
 def emails_text(ctx: click.Context, gmail_id: str) -> None:
     """Get email plain text."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}/text")
+        if resp.status_code >= 400:
+            click.echo(f"Error: {resp.text}", err=True)
+            sys.exit(1)
         data = resp.json()
-
-    if "error" in data:
-        click.echo(f"Error: {data['error']}", err=True)
-        sys.exit(1)
 
     if ctx.obj["json"]:
         output_json(data)
@@ -138,7 +137,7 @@ def emails_text(ctx: click.Context, gmail_id: str) -> None:
 @click.pass_context
 def emails_stats(ctx: click.Context) -> None:
     """Get email statistics."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get("/emails/stats")
         data = resp.json()
 
@@ -152,7 +151,7 @@ def emails_stats(ctx: click.Context) -> None:
 @click.pass_context
 def emails_by_label(ctx: click.Context, label_id: str, limit: int, offset: int) -> None:
     """Get emails with a Gmail label ID."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/by-label/{label_id}", params={"limit": limit, "offset": offset})
         data = resp.json()
 
@@ -170,7 +169,7 @@ def emails_by_label(ctx: click.Context, label_id: str, limit: int, offset: int) 
 @click.pass_context
 def emails_sender_classifications(ctx: click.Context, from_addr: str) -> None:
     """Get classification breakdown for a sender."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/sender/{from_addr}/classifications")
         data = resp.json()
 
@@ -188,7 +187,7 @@ def emails_sender_classifications(ctx: click.Context, from_addr: str) -> None:
 @click.pass_context
 def emails_distribution(ctx: click.Context, limit: int) -> None:
     """Get classification distribution by label."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get("/emails/classifications/distribution", params={"limit": limit})
         data = resp.json()
 
@@ -203,7 +202,7 @@ def emails_distribution(ctx: click.Context, limit: int) -> None:
 @click.pass_context
 def emails_uncategorized(ctx: click.Context, limit: int) -> None:
     """Get top senders only in Uncategorized (missing rules)."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get("/emails/uncategorized/top-senders", params={"limit": limit})
         data = resp.json()
 
@@ -228,7 +227,7 @@ def queue() -> None:
 @click.pass_context
 def queue_stats(ctx: click.Context) -> None:
     """Get queue depths by name and status."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get("/queue/stats")
         data = resp.json()
 
@@ -247,7 +246,7 @@ def queue_stats(ctx: click.Context) -> None:
 @click.pass_context
 def queue_failed(ctx: click.Context, queue_name: str | None, limit: int) -> None:
     """List failed jobs."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         params: dict[str, Any] = {"limit": limit}
         if queue_name:
             params["queue"] = queue_name
@@ -265,7 +264,7 @@ def queue_failed(ctx: click.Context, queue_name: str | None, limit: int) -> None
 @click.pass_context
 def queue_retry(ctx: click.Context, job_id: int) -> None:
     """Retry a failed job."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.post(f"/queue/failed/{job_id}/retry")
         data = resp.json()
 
@@ -281,7 +280,7 @@ def queue_retry(ctx: click.Context, job_id: int) -> None:
 @click.pass_context
 def queue_delete(ctx: click.Context, job_id: int) -> None:
     """Delete a failed job."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.delete(f"/queue/failed/{job_id}")
         data = resp.json()
 
@@ -297,7 +296,7 @@ def queue_delete(ctx: click.Context, job_id: int) -> None:
 @click.pass_context
 def queue_retry_all(ctx: click.Context, queue_name: str) -> None:
     """Retry all failed jobs for a queue."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.post("/queue/failed/retry-all", params={"queue": queue_name})
         data = resp.json()
 
@@ -329,7 +328,7 @@ def backfill_trigger(
     ctx: click.Context, queue_name: str, days: int, label: str | None, priority: int
 ) -> None:
     """Trigger backfill of emails to a worker queue."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         payload = {"queue": queue_name, "days": days, "priority": priority}
         if label:
             payload["label"] = label
@@ -346,7 +345,7 @@ def backfill_trigger(
 @click.pass_context
 def backfill_status(ctx: click.Context) -> None:
     """Get backfill job status."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get("/backfill/status")
         data = resp.json()
 
@@ -358,7 +357,7 @@ def backfill_status(ctx: click.Context) -> None:
 @click.pass_context
 def backfill_cancel(ctx: click.Context, queue_name: str) -> None:
     """Cancel pending backfill jobs."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.post("/backfill/cancel", json={"queue": queue_name})
         data = resp.json()
 
@@ -380,7 +379,7 @@ def triage() -> None:
 @click.pass_context
 def triage_stats(ctx: click.Context) -> None:
     """Get classification statistics."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get("/triage/stats")
         data = resp.json()
 
@@ -413,7 +412,7 @@ def triage_rerun(
         click.echo("Error: Must specify --gmail-id or --label", err=True)
         sys.exit(1)
 
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.post("/triage/rerun", json=payload)
         data = resp.json()
 
@@ -433,7 +432,7 @@ def triage_rerun(
 @click.pass_context
 def triage_list(ctx: click.Context, limit: int, label: str | None) -> None:
     """List recent classifications."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         params: dict[str, Any] = {"limit": limit}
         if label:
             params["label"] = label
@@ -473,7 +472,7 @@ def sync_backfill(ctx: click.Context, days: int | None, after: str | None) -> No
     if after:
         payload["after"] = after
 
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.post("/sync/backfill", json=payload)
         data = resp.json()
 
@@ -490,7 +489,7 @@ def sync_backfill(ctx: click.Context, days: int | None, after: str | None) -> No
 @click.pass_context
 def sync_jobs(ctx: click.Context, limit: int, status: str | None) -> None:
     """List sync backfill jobs."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         params: dict[str, Any] = {"limit": limit}
         if status:
             params["status"] = status
@@ -508,7 +507,7 @@ def sync_jobs(ctx: click.Context, limit: int, status: str | None) -> None:
 @click.pass_context
 def sync_job(ctx: click.Context, job_id: str) -> None:
     """Get sync backfill job status."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/sync/backfill/{job_id}")
         data = resp.json()
 
@@ -524,7 +523,7 @@ def sync_job(ctx: click.Context, job_id: str) -> None:
 @click.pass_context
 def sync_cancel(ctx: click.Context, job_id: str) -> None:
     """Cancel a sync backfill job."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         resp = client.post(f"/sync/backfill/{job_id}/cancel")
         data = resp.json()
 
@@ -544,7 +543,7 @@ def sync_cancel(ctx: click.Context, job_id: str) -> None:
 @click.pass_context
 def health(ctx: click.Context) -> None:
     """Check gateway health."""
-    with get_client() as client:
+    with get_client(ctx.obj["url"]) as client:
         try:
             resp = client.get("/health")
             data = resp.json()
