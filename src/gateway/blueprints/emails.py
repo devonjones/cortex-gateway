@@ -139,3 +139,169 @@ def get_stats():
             "duckdb": duckdb_stats,
         }
     )
+
+
+@emails_bp.route("/by-label/<label_id>")
+def get_emails_by_label(label_id: str) -> Response:
+    """Get emails with a specific Gmail label ID.
+
+    Useful for finding emails to backfill or debug label issues.
+
+    Args:
+        label_id: Gmail label ID (e.g., 'Label_117')
+
+    Query params:
+        limit: Number of emails to return (default 50, max 100)
+        offset: Pagination offset (default 0)
+    """
+    limit = request.args.get("limit", 50, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    limit = min(limit, 100)
+
+    query = """
+        SELECT
+            er.gmail_id,
+            ep.from_addr,
+            ep.subject,
+            ep.date_header,
+            er.label_ids
+        FROM emails_raw er
+        JOIN emails_parsed ep ON er.gmail_id = ep.gmail_id
+        WHERE %s = ANY(er.label_ids)
+        ORDER BY ep.date_header DESC NULLS LAST
+        LIMIT %s OFFSET %s
+    """
+
+    results = postgres.execute_query(query, (label_id, limit, offset))
+
+    # Get label name for context
+    label_query = "SELECT id, name FROM gmail_labels WHERE id = %s"
+    label_info = postgres.execute_one(label_query, (label_id,))
+
+    return jsonify(
+        {
+            "label": label_info,
+            "emails": results,
+            "limit": limit,
+            "offset": offset,
+            "count": len(results),
+        }
+    )
+
+
+@emails_bp.route("/sender/<path:from_addr>/classifications")
+def get_sender_classifications(from_addr: str) -> Response:
+    """Get classification breakdown for a sender.
+
+    Shows how emails from this sender are classified, useful for
+    debugging rules or identifying if old classifications exist.
+
+    Args:
+        from_addr: Email sender address
+    """
+    query = """
+        SELECT
+            c.action_taken->>'label' as label,
+            COUNT(*) as count
+        FROM classifications c
+        JOIN emails_parsed ep ON c.gmail_id = ep.gmail_id
+        WHERE ep.from_addr = %s
+        GROUP BY c.action_taken->>'label'
+        ORDER BY count DESC
+    """
+
+    results = postgres.execute_query(query, (from_addr,))
+
+    return jsonify(
+        {
+            "from_addr": from_addr,
+            "classifications": results,
+            "total": sum(r["count"] for r in results),
+        }
+    )
+
+
+@emails_bp.route("/classifications/distribution")
+def get_classification_distribution() -> Response:
+    """Get distribution of classifications by label.
+
+    Shows top labels by unique email count, useful for understanding
+    rule coverage and identifying high-volume senders.
+
+    Query params:
+        limit: Number of labels to return (default 50, max 200)
+    """
+    limit = request.args.get("limit", 50, type=int)
+    limit = min(limit, 200)
+
+    query = """
+        SELECT
+            action_taken->>'label' as label,
+            COUNT(DISTINCT gmail_id) as count
+        FROM classifications
+        WHERE action_taken->>'label' IS NOT NULL
+        GROUP BY action_taken->>'label'
+        ORDER BY count DESC
+        LIMIT %s
+    """
+
+    results = postgres.execute_query(query, (limit,))
+
+    return jsonify(
+        {
+            "labels": results,
+            "limit": limit,
+            "count": len(results),
+        }
+    )
+
+
+@emails_bp.route("/uncategorized/top-senders")
+def get_uncategorized_top_senders() -> Response:
+    """Get top senders with emails only classified as Uncategorized.
+
+    These are senders where no email has been correctly categorized,
+    indicating a missing rule.
+
+    Query params:
+        limit: Number of senders to return (default 20, max 100)
+    """
+    limit = request.args.get("limit", 20, type=int)
+    limit = min(limit, 100)
+
+    query = """
+        WITH uncategorized_emails AS (
+            SELECT DISTINCT c.gmail_id
+            FROM classifications c
+            WHERE c.action_taken->>'label' = 'Cortex/Uncategorized'
+        ),
+        emails_with_other_labels AS (
+            SELECT DISTINCT c.gmail_id
+            FROM classifications c
+            WHERE c.action_taken->>'label' != 'Cortex/Uncategorized'
+              AND c.action_taken->>'label' IS NOT NULL
+        ),
+        only_uncategorized AS (
+            SELECT gmail_id FROM uncategorized_emails
+            EXCEPT
+            SELECT gmail_id FROM emails_with_other_labels
+        )
+        SELECT
+            ep.from_addr,
+            COUNT(DISTINCT ep.gmail_id) as count
+        FROM only_uncategorized ou
+        JOIN emails_parsed ep ON ep.gmail_id = ou.gmail_id
+        GROUP BY ep.from_addr
+        ORDER BY count DESC
+        LIMIT %s
+    """
+
+    results = postgres.execute_query(query, (limit,))
+
+    return jsonify(
+        {
+            "senders": results,
+            "limit": limit,
+            "count": len(results),
+        }
+    )
