@@ -8,7 +8,7 @@ Flow: CLI/Gateway -> backfill_jobs table -> gmail-sync polls and executes
 
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from gateway.services import postgres
 
@@ -45,7 +45,8 @@ def trigger_sync_backfill():
         query = f"after:{after_date.strftime('%Y/%m/%d')}"
     else:
         try:
-            after_date = datetime.strptime(after, "%Y-%m-%d").date()
+            # after is guaranteed to be str here (not None) due to the earlier check
+            after_date = datetime.strptime(str(after), "%Y-%m-%d").date()
             query = f"after:{after_date.strftime('%Y/%m/%d')}"
         except ValueError:
             return (
@@ -130,7 +131,7 @@ def list_sync_backfill_jobs():
 
 
 @sync_bp.route("/backfill/<job_id>", methods=["GET"])
-def get_sync_backfill_job(job_id: str):
+def get_sync_backfill_job(job_id: str) -> Response | tuple[Response, int]:
     """Get status of a specific backfill job."""
     query = """
         SELECT id, status, query, days, after_date, processed, stored, updated,
@@ -163,7 +164,7 @@ def get_sync_backfill_job(job_id: str):
 
 
 @sync_bp.route("/backfill/<job_id>/cancel", methods=["POST"])
-def cancel_sync_backfill_job(job_id: str):
+def cancel_sync_backfill_job(job_id: str) -> Response | tuple[Response, int]:
     """Cancel a pending or running backfill job.
 
     Running jobs will stop at the next page boundary.
