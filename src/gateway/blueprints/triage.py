@@ -16,12 +16,12 @@ def triage_stats():
     # Overall counts by rule/category
     query = """
         SELECT
-            COALESCE(matched_rule, 'llm') as classifier,
-            label,
-            action,
+            COALESCE(matched_chain, 'llm') as classifier,
+            action_taken->>'label' as label,
+            action_taken->>'action' as action,
             COUNT(*) as count
         FROM classifications
-        GROUP BY matched_rule, label, action
+        GROUP BY matched_chain, action_taken->>'label', action_taken->>'action'
         ORDER BY count DESC
         LIMIT 50
     """
@@ -42,10 +42,10 @@ def triage_stats():
     # Method breakdown (rule vs llm)
     method_query = """
         SELECT
-            CASE WHEN matched_rule IS NOT NULL THEN 'rule' ELSE 'llm' END as method,
+            CASE WHEN matched_chain IS NOT NULL THEN 'rule' ELSE 'llm' END as method,
             COUNT(*) as count
         FROM classifications
-        GROUP BY CASE WHEN matched_rule IS NOT NULL THEN 'rule' ELSE 'llm' END
+        GROUP BY CASE WHEN matched_chain IS NOT NULL THEN 'rule' ELSE 'llm' END
     """
     methods = postgres.execute_query(method_query)
 
@@ -154,14 +154,14 @@ def list_classifications():
     query = """
         SELECT
             c.gmail_id,
-            c.matched_rule,
-            c.label,
-            c.action,
+            c.matched_chain as matched_rule,
+            c.action_taken->>'label' as label,
+            c.action_taken->>'action' as action,
             c.llm_category,
-            c.confidence,
-            c.created_at,
+            c.llm_confidence as confidence,
+            c.classified_at as created_at,
             ep.subject,
-            ep.from_address
+            ep.from_addr
         FROM classifications c
         LEFT JOIN emails_parsed ep ON c.gmail_id = ep.gmail_id
         WHERE 1=1
@@ -169,14 +169,14 @@ def list_classifications():
     params: list[str] = []
 
     if label:
-        query += " AND c.label = %s"
+        query += " AND c.action_taken->>'label' = %s"
         params.append(label)
 
     if action:
-        query += " AND c.action = %s"
+        query += " AND c.action_taken->>'action' = %s"
         params.append(action)
 
-    query += " ORDER BY c.created_at DESC LIMIT %s OFFSET %s"
+    query += " ORDER BY c.classified_at DESC LIMIT %s OFFSET %s"
     params.extend([str(limit), str(offset)])
 
     results = postgres.execute_query(query, tuple(params))
