@@ -38,7 +38,9 @@ def safe_json(resp: httpx.Response) -> dict[str, Any]:
 
     # Check for error responses that are valid JSON
     if resp.status_code >= 400:
-        error_msg = data.get("error", resp.text[:200])
+        error_msg = (
+            data.get("error", resp.text[:200]) if isinstance(data, dict) else resp.text[:200]
+        )
         click.echo(f"Error {resp.status_code}: {error_msg}", err=True)
         sys.exit(1)
 
@@ -292,10 +294,6 @@ def queue_retry(ctx: click.Context, job_id: int) -> None:
         resp = client.post(f"/queue/failed/{job_id}/retry")
         data = safe_json(resp)
 
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
-
     click.echo(f"Retried job {job_id} on queue {data.get('queue_name')}")
 
 
@@ -306,11 +304,7 @@ def queue_delete(ctx: click.Context, job_id: int) -> None:
     """Delete a failed job."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.delete(f"/queue/failed/{job_id}")
-        data = safe_json(resp)
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        safe_json(resp)  # Validates response, exits on error
 
     click.echo(f"Deleted job {job_id}")
 
@@ -323,10 +317,6 @@ def queue_retry_all(ctx: click.Context, queue_name: str) -> None:
     with get_client(ctx.obj["url"]) as client:
         resp = client.post("/queue/failed/retry-all", params={"queue": queue_name})
         data = safe_json(resp)
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
 
     click.echo(f"Retried {data.get('count', 0)} failed jobs on queue {queue_name}")
 
@@ -440,10 +430,6 @@ def triage_rerun(
         resp = client.post("/triage/rerun", json=payload)
         data = safe_json(resp)
 
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
-
     if ctx.obj["json"]:
         output_json(data)
     else:
@@ -502,10 +488,6 @@ def sync_backfill(ctx: click.Context, days: int | None, after: str | None) -> No
         resp = client.post("/sync/backfill", json=payload)
         data = safe_json(resp)
 
-    if resp.status_code not in (200, 201):
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
-
     output_json(data)
 
 
@@ -537,10 +519,6 @@ def sync_job(ctx: click.Context, job_id: str) -> None:
         resp = client.get(f"/sync/backfill/{job_id}")
         data = safe_json(resp)
 
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
-
     output_json(data)
 
 
@@ -551,11 +529,7 @@ def sync_cancel(ctx: click.Context, job_id: str) -> None:
     """Cancel a sync backfill job."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.post(f"/sync/backfill/{job_id}/cancel")
-        data = safe_json(resp)
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        safe_json(resp)  # Validates response, exits on error
 
     click.echo(f"Cancelled job {job_id}")
 
