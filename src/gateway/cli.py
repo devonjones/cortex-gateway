@@ -18,16 +18,31 @@ def get_client(url: str) -> httpx.Client:
 
 
 def safe_json(resp: httpx.Response) -> dict[str, Any]:
-    """Parse JSON response, handling errors gracefully."""
+    """Parse JSON response, handling errors gracefully.
+
+    Handles:
+    - Non-JSON error responses (HTML error pages)
+    - JSON error responses ({"error": "..."})
+    - Empty responses
+    """
+    # Try to parse JSON first
     try:
-        return resp.json()
-    except Exception:
+        data = resp.json()
+    except json.JSONDecodeError:
         # Response isn't JSON (e.g., HTML error page)
         if resp.status_code >= 400:
             click.echo(f"Error {resp.status_code}: {resp.text[:200]}", err=True)
             sys.exit(1)
         # Non-error but not JSON - return empty dict
         return {}
+
+    # Check for error responses that are valid JSON
+    if resp.status_code >= 400:
+        error_msg = data.get("error", resp.text[:200])
+        click.echo(f"Error {resp.status_code}: {error_msg}", err=True)
+        sys.exit(1)
+
+    return data
 
 
 def output_json(data: Any) -> None:
@@ -120,9 +135,6 @@ def emails_body(ctx: click.Context, gmail_id: str) -> None:
     """Get email body."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}/body")
-        if resp.status_code >= 400:
-            click.echo(f"Error: {resp.text}", err=True)
-            sys.exit(1)
         data = safe_json(resp)
 
     output_json(data)
@@ -135,9 +147,6 @@ def emails_text(ctx: click.Context, gmail_id: str) -> None:
     """Get email plain text."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}/text")
-        if resp.status_code >= 400:
-            click.echo(f"Error: {resp.text}", err=True)
-            sys.exit(1)
         data = safe_json(resp)
 
     if ctx.obj["json"]:
