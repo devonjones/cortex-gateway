@@ -85,11 +85,10 @@ def rerun_triage():
         # Specific IDs
         placeholders = ",".join(["%s"] * len(gmail_ids))
         query = f"""
-            INSERT INTO queue (queue_name, gmail_id, payload, priority, status, created_at)
+            INSERT INTO queue (queue_name, payload, priority, status, created_at)
             SELECT
                 'triage',
-                er.gmail_id,
-                jsonb_build_object('gmail_id', er.gmail_id, 'rerun', true),
+                jsonb_build_object('email_id', er.id, 'gmail_id', er.gmail_id, 'rerun', true),
                 %s,
                 'pending',
                 NOW()
@@ -101,11 +100,10 @@ def rerun_triage():
         # Label filter with date range
         cutoff = datetime.utcnow() - timedelta(days=days)
         query = """
-            INSERT INTO queue (queue_name, gmail_id, payload, priority, status, created_at)
+            INSERT INTO queue (queue_name, payload, priority, status, created_at)
             SELECT
                 'triage',
-                er.gmail_id,
-                jsonb_build_object('gmail_id', er.gmail_id, 'rerun', true),
+                jsonb_build_object('email_id', er.id, 'gmail_id', er.gmail_id, 'rerun', true),
                 %s,
                 'pending',
                 NOW()
@@ -121,7 +119,7 @@ def rerun_triage():
             AND NOT EXISTS (
                 SELECT 1 FROM queue q
                 WHERE q.queue_name = 'triage'
-                AND q.gmail_id = er.gmail_id
+                AND q.payload->>'gmail_id' = er.gmail_id
                 AND q.status IN ('pending', 'processing')
             )
         """
