@@ -1,6 +1,5 @@
 """Backfill API endpoints for historical email processing."""
 
-import json
 from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
@@ -51,8 +50,13 @@ def trigger_backfill():
     params: list[str | int] = [queue_name, priority, cutoff.isoformat()]
 
     if label:
-        query += " AND er.label_ids @> %s::jsonb"
-        params.append(json.dumps([label]))
+        # Join with classifications to filter by Cortex label
+        query = query.replace(
+            "FROM emails_raw er",
+            "FROM emails_raw er JOIN classifications c ON c.email_id = er.id",
+        )
+        query += " AND c.action_taken->>'label' = %s"
+        params.append(label)
 
     # Avoid duplicates
     query += """

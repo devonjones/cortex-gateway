@@ -1,6 +1,5 @@
 """Triage-related API endpoints."""
 
-import json
 from datetime import datetime, timedelta
 
 from flask import Blueprint, jsonify, request
@@ -97,7 +96,7 @@ def rerun_triage():
         """
         params: list[str | int] = [priority] + gmail_ids
     else:
-        # Label filter with date range
+        # Label filter with date range - join with classifications to filter by Cortex label
         cutoff = datetime.utcnow() - timedelta(days=days)
         query = """
             INSERT INTO queue (queue_name, payload, priority, status, created_at)
@@ -108,10 +107,12 @@ def rerun_triage():
                 'pending',
                 NOW()
             FROM emails_raw er
+            JOIN classifications c ON c.email_id = er.id
             WHERE er.created_at >= %s
-            AND er.label_ids @> %s::jsonb
+            AND c.action_taken->>'label' = %s
         """
-        params = [priority, cutoff.isoformat(), json.dumps([label])]
+        # label is guaranteed to be non-None due to earlier check
+        params = [priority, cutoff.isoformat(), str(label)]
 
     # Avoid duplicates unless force
     if not force:
