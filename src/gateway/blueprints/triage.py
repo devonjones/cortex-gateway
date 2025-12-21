@@ -34,7 +34,7 @@ def triage_stats():
             COUNT(*) as count
         FROM classifications
         WHERE classified_at >= NOW() - INTERVAL '24 hours'
-        GROUP BY date_trunc('hour', classified_at)
+        GROUP BY hour
         ORDER BY hour
     """
     recent = postgres.execute_query(recent_query)
