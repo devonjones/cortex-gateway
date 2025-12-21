@@ -39,7 +39,7 @@ def safe_json(resp: httpx.Response) -> dict[str, Any]:
     # Check for error responses that are valid JSON
     if resp.status_code >= 400:
         error_msg = (
-            data.get("error", resp.text[:200]) if isinstance(data, dict) else resp.text[:200]
+            (data.get("error") or resp.text[:200]) if isinstance(data, dict) else resp.text[:200]
         )
         click.echo(f"Error {resp.status_code}: {error_msg}", err=True)
         sys.exit(1)
