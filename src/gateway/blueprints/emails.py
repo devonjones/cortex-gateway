@@ -82,10 +82,16 @@ def get_email(gmail_id: str) -> Response | tuple[Response, int]:
 
     # Get classification if exists
     classification_query = """
-        SELECT matched_rule, label, action, llm_category, confidence, created_at
+        SELECT
+            matched_chain as matched_rule,
+            action_taken->>'label' as label,
+            action_taken->>'action' as action,
+            llm_category,
+            llm_confidence as confidence,
+            classified_at as created_at
         FROM classifications
         WHERE gmail_id = %s
-        ORDER BY created_at DESC
+        ORDER BY classified_at DESC
         LIMIT 1
     """
     classification = postgres.execute_one(classification_query, (gmail_id,))

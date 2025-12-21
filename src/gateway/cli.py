@@ -17,6 +17,45 @@ def get_client(url: str) -> httpx.Client:
     return httpx.Client(base_url=url, timeout=30.0)
 
 
+def safe_json(resp: httpx.Response) -> dict[str, Any]:
+    """Parse JSON response, handling errors gracefully.
+
+    Handles:
+    - Non-JSON error responses (HTML error pages)
+    - JSON error responses ({"error": "..."})
+    - Empty responses
+    """
+    # Try to parse JSON first
+    try:
+        data = resp.json()
+    except json.JSONDecodeError:
+        # Response isn't JSON (e.g., HTML error page)
+        if resp.status_code >= 400:
+            click.echo(f"Error {resp.status_code}: {resp.text[:200]}", err=True)
+            sys.exit(1)
+        # Non-error but not JSON - return empty dict
+        return {}
+
+    # Check for error responses that are valid JSON
+    if resp.status_code >= 400:
+        error_msg = (
+            (data.get("error") or resp.text[:200]) if isinstance(data, dict) else resp.text[:200]
+        )
+        click.echo(f"Error {resp.status_code}: {error_msg}", err=True)
+        sys.exit(1)
+
+    # Ensure we return a dict as per type hint
+    if not isinstance(data, dict):
+        click.echo(
+            f"Error: API returned unexpected JSON type '{type(data).__name__}'. "
+            "Expected a dictionary.",
+            err=True,
+        )
+        sys.exit(1)
+
+    return data
+
+
 def output_json(data: Any) -> None:
     """Pretty-print JSON output."""
     click.echo(json.dumps(data, indent=2, default=str))
@@ -80,12 +119,12 @@ def emails_list(ctx: click.Context, limit: int, offset: int, label: str | None) 
         if label:
             params["label"] = label
         resp = client.get("/emails/", params=params)
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
     else:
-        output_table(data["emails"], ["gmail_id", "from_addr", "subject", "date_header"])
+        output_table(data.get("emails", []), ["gmail_id", "from_addr", "subject", "date_header"])
 
 
 @emails.command("get")
@@ -95,7 +134,7 @@ def emails_get(ctx: click.Context, gmail_id: str) -> None:
     """Get email details."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}")
-        data = resp.json()
+        data = safe_json(resp)
 
     output_json(data)
 
@@ -107,10 +146,7 @@ def emails_body(ctx: click.Context, gmail_id: str) -> None:
     """Get email body."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}/body")
-        if resp.status_code >= 400:
-            click.echo(f"Error: {resp.text}", err=True)
-            sys.exit(1)
-        data = resp.json()
+        data = safe_json(resp)
 
     output_json(data)
 
@@ -122,10 +158,7 @@ def emails_text(ctx: click.Context, gmail_id: str) -> None:
     """Get email plain text."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/{gmail_id}/text")
-        if resp.status_code >= 400:
-            click.echo(f"Error: {resp.text}", err=True)
-            sys.exit(1)
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
@@ -139,7 +172,7 @@ def emails_stats(ctx: click.Context) -> None:
     """Get email statistics."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get("/emails/stats")
-        data = resp.json()
+        data = safe_json(resp)
 
     output_json(data)
 
@@ -153,7 +186,7 @@ def emails_by_label(ctx: click.Context, label_id: str, limit: int, offset: int) 
     """Get emails with a Gmail label ID."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/by-label/{label_id}", params={"limit": limit, "offset": offset})
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
@@ -161,7 +194,7 @@ def emails_by_label(ctx: click.Context, label_id: str, limit: int, offset: int) 
         if data.get("label"):
             click.echo(f"Label: {data['label'].get('name', label_id)}")
             click.echo()
-        output_table(data["emails"], ["gmail_id", "from_addr", "subject"])
+        output_table(data.get("emails", []), ["gmail_id", "from_addr", "subject"])
 
 
 @emails.command("sender")
@@ -171,15 +204,15 @@ def emails_sender_classifications(ctx: click.Context, from_addr: str) -> None:
     """Get classification breakdown for a sender."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/emails/sender/{from_addr}/classifications")
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
     else:
-        click.echo(f"Sender: {data['from_addr']}")
-        click.echo(f"Total classifications: {data['total']}")
+        click.echo(f"Sender: {data.get('from_addr', from_addr)}")
+        click.echo(f"Total classifications: {data.get('total', 0)}")
         click.echo()
-        output_table(data["classifications"], ["label", "count"])
+        output_table(data.get("classifications", []), ["label", "count"])
 
 
 @emails.command("distribution")
@@ -189,12 +222,12 @@ def emails_distribution(ctx: click.Context, limit: int) -> None:
     """Get classification distribution by label."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get("/emails/classifications/distribution", params={"limit": limit})
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
     else:
-        output_table(data["labels"], ["label", "count"])
+        output_table(data.get("labels", []), ["label", "count"])
 
 
 @emails.command("uncategorized")
@@ -204,12 +237,12 @@ def emails_uncategorized(ctx: click.Context, limit: int) -> None:
     """Get top senders only in Uncategorized (missing rules)."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get("/emails/uncategorized/top-senders", params={"limit": limit})
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
     else:
-        output_table(data["senders"], ["from_addr", "count"])
+        output_table(data.get("senders", []), ["from_addr", "count"])
 
 
 # =============================================================================
@@ -229,7 +262,7 @@ def queue_stats(ctx: click.Context) -> None:
     """Get queue depths by name and status."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get("/queue/stats")
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
@@ -251,12 +284,14 @@ def queue_failed(ctx: click.Context, queue_name: str | None, limit: int) -> None
         if queue_name:
             params["queue"] = queue_name
         resp = client.get("/queue/failed", params=params)
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
     else:
-        output_table(data["failed_jobs"], ["id", "queue_name", "gmail_id", "error", "attempts"])
+        output_table(
+            data.get("failed_jobs", []), ["id", "queue_name", "gmail_id", "error", "attempts"]
+        )
 
 
 @queue.command("retry")
@@ -266,11 +301,7 @@ def queue_retry(ctx: click.Context, job_id: int) -> None:
     """Retry a failed job."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.post(f"/queue/failed/{job_id}/retry")
-        data = resp.json()
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        data = safe_json(resp)
 
     click.echo(f"Retried job {job_id} on queue {data.get('queue_name')}")
 
@@ -282,11 +313,7 @@ def queue_delete(ctx: click.Context, job_id: int) -> None:
     """Delete a failed job."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.delete(f"/queue/failed/{job_id}")
-        data = resp.json()
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        safe_json(resp)  # Validates response, exits on error
 
     click.echo(f"Deleted job {job_id}")
 
@@ -298,11 +325,7 @@ def queue_retry_all(ctx: click.Context, queue_name: str) -> None:
     """Retry all failed jobs for a queue."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.post("/queue/failed/retry-all", params={"queue": queue_name})
-        data = resp.json()
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        data = safe_json(resp)
 
     click.echo(f"Retried {data.get('count', 0)} failed jobs on queue {queue_name}")
 
@@ -333,7 +356,7 @@ def backfill_trigger(
         if label:
             payload["label"] = label
         resp = client.post("/backfill/", json=payload)
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
@@ -347,7 +370,7 @@ def backfill_status(ctx: click.Context) -> None:
     """Get backfill job status."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get("/backfill/status")
-        data = resp.json()
+        data = safe_json(resp)
 
     output_json(data)
 
@@ -359,7 +382,7 @@ def backfill_cancel(ctx: click.Context, queue_name: str) -> None:
     """Cancel pending backfill jobs."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.post("/backfill/cancel", json={"queue": queue_name})
-        data = resp.json()
+        data = safe_json(resp)
 
     click.echo(f"Cancelled {data.get('count', 0)} backfill jobs")
 
@@ -381,7 +404,7 @@ def triage_stats(ctx: click.Context) -> None:
     """Get classification statistics."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get("/triage/stats")
-        data = resp.json()
+        data = safe_json(resp)
 
     output_json(data)
 
@@ -414,11 +437,7 @@ def triage_rerun(
 
     with get_client(ctx.obj["url"]) as client:
         resp = client.post("/triage/rerun", json=payload)
-        data = resp.json()
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
@@ -437,12 +456,14 @@ def triage_list(ctx: click.Context, limit: int, label: str | None) -> None:
         if label:
             params["label"] = label
         resp = client.get("/triage/classifications", params=params)
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
     else:
-        output_table(data["classifications"], ["gmail_id", "label", "matched_rule", "created_at"])
+        output_table(
+            data.get("classifications", []), ["gmail_id", "label", "matched_rule", "created_at"]
+        )
 
 
 # =============================================================================
@@ -474,11 +495,7 @@ def sync_backfill(ctx: click.Context, days: int | None, after: str | None) -> No
 
     with get_client(ctx.obj["url"]) as client:
         resp = client.post("/sync/backfill", json=payload)
-        data = resp.json()
-
-    if resp.status_code not in (200, 201):
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        data = safe_json(resp)
 
     output_json(data)
 
@@ -494,12 +511,12 @@ def sync_jobs(ctx: click.Context, limit: int, status: str | None) -> None:
         if status:
             params["status"] = status
         resp = client.get("/sync/backfill", params=params)
-        data = resp.json()
+        data = safe_json(resp)
 
     if ctx.obj["json"]:
         output_json(data)
     else:
-        output_table(data["jobs"], ["id", "status", "query", "processed", "stored"])
+        output_table(data.get("jobs", []), ["id", "status", "query", "processed", "stored"])
 
 
 @sync.command("job")
@@ -509,11 +526,7 @@ def sync_job(ctx: click.Context, job_id: str) -> None:
     """Get sync backfill job status."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.get(f"/sync/backfill/{job_id}")
-        data = resp.json()
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        data = safe_json(resp)
 
     output_json(data)
 
@@ -525,11 +538,7 @@ def sync_cancel(ctx: click.Context, job_id: str) -> None:
     """Cancel a sync backfill job."""
     with get_client(ctx.obj["url"]) as client:
         resp = client.post(f"/sync/backfill/{job_id}/cancel")
-        data = resp.json()
-
-    if resp.status_code != 200:
-        click.echo(f"Error: {data.get('error', 'Unknown error')}", err=True)
-        sys.exit(1)
+        safe_json(resp)  # Validates response, exits on error
 
     click.echo(f"Cancelled job {job_id}")
 
@@ -546,7 +555,7 @@ def health(ctx: click.Context) -> None:
     with get_client(ctx.obj["url"]) as client:
         try:
             resp = client.get("/health")
-            data = resp.json()
+            data = safe_json(resp)
             output_json(data)
         except httpx.ConnectError:
             click.echo(f"Error: Cannot connect to gateway at {ctx.obj['url']}", err=True)
