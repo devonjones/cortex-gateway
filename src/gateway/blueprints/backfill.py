@@ -38,11 +38,10 @@ def trigger_backfill():
 
     # Build query to find emails to backfill
     query = """
-        INSERT INTO queue (queue_name, gmail_id, payload, priority, status, created_at)
+        INSERT INTO queue (queue_name, payload, priority, status, created_at)
         SELECT
             %s,
-            er.gmail_id,
-            jsonb_build_object('gmail_id', er.gmail_id, 'backfill', true),
+            jsonb_build_object('email_id', er.id, 'gmail_id', er.gmail_id, 'backfill', true),
             %s,
             'pending',
             NOW()
@@ -60,7 +59,7 @@ def trigger_backfill():
         AND NOT EXISTS (
             SELECT 1 FROM queue q
             WHERE q.queue_name = %s
-            AND q.gmail_id = er.gmail_id
+            AND q.payload->>'gmail_id' = er.gmail_id
             AND q.status IN ('pending', 'processing')
         )
     """

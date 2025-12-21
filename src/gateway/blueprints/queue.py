@@ -47,12 +47,12 @@ def list_failed():
         SELECT
             id,
             queue_name,
-            gmail_id,
+            payload->>'gmail_id' as gmail_id,
             payload,
-            error,
+            last_error as error,
             attempts,
             created_at,
-            updated_at
+            claimed_at as updated_at
         FROM queue
         WHERE status = 'failed'
     """
@@ -82,7 +82,7 @@ def retry_failed(job_id: int) -> Response | tuple[Response, int]:
     """Retry a failed job by resetting its status to pending."""
     # First verify it exists and is failed
     check_query = """
-        SELECT id, queue_name, gmail_id, status
+        SELECT id, queue_name, payload->>'gmail_id' as gmail_id, status
         FROM queue
         WHERE id = %s
     """
