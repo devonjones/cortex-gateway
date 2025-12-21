@@ -44,6 +44,15 @@ def safe_json(resp: httpx.Response) -> dict[str, Any]:
         click.echo(f"Error {resp.status_code}: {error_msg}", err=True)
         sys.exit(1)
 
+    # Ensure we return a dict as per type hint
+    if not isinstance(data, dict):
+        click.echo(
+            f"Error: API returned unexpected JSON type '{type(data).__name__}'. "
+            "Expected a dictionary.",
+            err=True,
+        )
+        sys.exit(1)
+
     return data
 
 
