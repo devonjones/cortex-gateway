@@ -100,7 +100,7 @@ def rerun_triage():
         cutoff = datetime.utcnow() - timedelta(days=days)
         query = """
             INSERT INTO queue (queue_name, payload, priority, status, created_at)
-            SELECT
+            SELECT DISTINCT ON (er.gmail_id)
                 'triage',
                 jsonb_build_object('email_id', er.id, 'gmail_id', er.gmail_id, 'rerun', true),
                 %s,
@@ -124,6 +124,9 @@ def rerun_triage():
                 AND q.status IN ('pending', 'processing')
             )
         """
+
+    # Handle any race conditions with existing queue entries
+    query += " ON CONFLICT DO NOTHING"
 
     count = postgres.execute_update(query, tuple(params))
 
