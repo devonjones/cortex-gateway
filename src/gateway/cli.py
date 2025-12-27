@@ -412,6 +412,7 @@ def triage_stats(ctx: click.Context) -> None:
 @triage.command("rerun")
 @click.option("--gmail-id", "-i", multiple=True, help="Specific Gmail IDs")
 @click.option("--label", "-l", help="Label filter")
+@click.option("--sender", "-s", multiple=True, help="Sender filter (from_addr, supports glob)")
 @click.option("--days", "-d", default=7, help="Days to look back")
 @click.option("--force", "-f", is_flag=True, help="Force rerun even if pending")
 @click.option("--priority", "-p", default=-100, help="Queue priority")
@@ -420,6 +421,7 @@ def triage_rerun(
     ctx: click.Context,
     gmail_id: tuple[str, ...],
     label: str | None,
+    sender: tuple[str, ...],
     days: int,
     force: bool,
     priority: int,
@@ -430,9 +432,11 @@ def triage_rerun(
         payload["gmail_ids"] = list(gmail_id)
     if label:
         payload["label"] = label
+    if sender:
+        payload["senders"] = list(sender)
 
-    if not gmail_id and not label:
-        click.echo("Error: Must specify --gmail-id or --label", err=True)
+    if not gmail_id and not label and not sender:
+        click.echo("Error: Must specify --gmail-id, --label, or --sender", err=True)
         sys.exit(1)
 
     with get_client(ctx.obj["url"]) as client:
