@@ -102,14 +102,8 @@ def rerun_triage():
         cutoff = datetime.utcnow() - timedelta(days=days)
 
         # Build LIKE conditions for each sender (supports glob patterns)
-        sender_conditions = []
-        for sender in senders:
-            # If sender contains *, convert to SQL LIKE pattern
-            if "*" in sender:
-                sender_conditions.append("ep.from_addr LIKE %s")
-            else:
-                sender_conditions.append("ep.from_addr = %s")
-
+        # Always use LIKE with ESCAPE to properly handle _ in email addresses
+        sender_conditions = ["ep.from_addr LIKE %s ESCAPE '\\'" for _ in senders]
         sender_clause = " OR ".join(sender_conditions)
 
         query = f"""
@@ -126,8 +120,11 @@ def rerun_triage():
             AND ({sender_clause})
         """
 
-        # Convert * glob patterns to % SQL patterns
-        sender_params = [s.replace("*", "%") for s in senders]
+        # Escape SQL LIKE special characters before converting glob * to SQL %
+        sender_params = [
+            s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "%")
+            for s in senders
+        ]
         params = [priority, cutoff.isoformat()] + sender_params
     else:
         # Label filter with date range - join with classifications to filter by Cortex label
