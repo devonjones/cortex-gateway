@@ -64,7 +64,7 @@ def rerun_triage():
     Request body:
         gmail_ids: List of specific Gmail IDs to rerun
         label: Label filter (e.g., "Cortex/Uncategorized")
-        senders: List of sender email addresses (supports glob patterns with %)
+        senders: List of sender email addresses (supports glob patterns with *)
         days: Number of days to look back (default: 7)
         force: If true, rerun even if already classified
         priority: Queue priority (default: -100)
@@ -118,6 +118,7 @@ def rerun_triage():
             JOIN emails_parsed ep ON ep.gmail_id = er.gmail_id
             WHERE er.created_at >= %s
             AND ({sender_clause})
+            ORDER BY er.gmail_id, er.created_at DESC
         """
 
         # Escape SQL LIKE special characters before converting glob * to SQL %
