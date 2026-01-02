@@ -126,7 +126,6 @@ def rerun_triage():
             JOIN emails_parsed ep ON ep.gmail_id = er.gmail_id
             WHERE er.created_at >= %s
             AND ({sender_clause})
-            ORDER BY er.gmail_id, er.created_at DESC
         """
 
         # Escape SQL LIKE special characters before converting glob * to SQL %
@@ -164,6 +163,10 @@ def rerun_triage():
                 AND q.status IN ('pending', 'processing')
             )
         """
+
+    # Add ORDER BY for DISTINCT ON queries (senders and label filters)
+    if senders or label:
+        query += " ORDER BY er.gmail_id, er.created_at DESC"
 
     # Handle any race conditions with existing queue entries
     query += " ON CONFLICT DO NOTHING"

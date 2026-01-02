@@ -439,6 +439,11 @@ def triage_rerun(
         click.echo("Error: Must specify --gmail-id, --label, or --sender", err=True)
         sys.exit(1)
 
+    filters_provided = sum(map(bool, (gmail_id, label, sender)))
+    if filters_provided > 1:
+        click.echo("Error: Only one of --gmail-id, --label, or --sender may be specified", err=True)
+        sys.exit(1)
+
     with get_client(ctx.obj["url"]) as client:
         resp = client.post("/triage/rerun", json=payload)
         data = safe_json(resp)
