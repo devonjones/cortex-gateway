@@ -73,13 +73,17 @@ def rerun_triage():
 
     # Validate input types
     gmail_ids_raw = data.get("gmail_ids")
-    if gmail_ids_raw is not None and not isinstance(gmail_ids_raw, list):
-        return jsonify({"error": "'gmail_ids' must be a list of strings"}), 400
+    if gmail_ids_raw is not None:
+        if not isinstance(gmail_ids_raw, list) or not all(
+            isinstance(s, str) for s in gmail_ids_raw
+        ):
+            return jsonify({"error": "'gmail_ids' must be a list of strings"}), 400
     gmail_ids = gmail_ids_raw or []
 
     senders_raw = data.get("senders")
-    if senders_raw is not None and not isinstance(senders_raw, list):
-        return jsonify({"error": "'senders' must be a list of strings"}), 400
+    if senders_raw is not None:
+        if not isinstance(senders_raw, list) or not all(isinstance(s, str) for s in senders_raw):
+            return jsonify({"error": "'senders' must be a list of strings"}), 400
     senders = [s for s in senders_raw or [] if s]
 
     label = data.get("label")
