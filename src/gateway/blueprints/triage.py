@@ -1,6 +1,6 @@
 """Triage-related API endpoints."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -73,7 +73,7 @@ def rerun_triage():
 
     gmail_ids = data.get("gmail_ids", [])
     label = data.get("label")
-    senders = data.get("senders", [])
+    senders = [s for s in data.get("senders", []) if s]
     days = data.get("days", 7)
     force = data.get("force", False)
     priority = data.get("priority", -100)
@@ -107,7 +107,7 @@ def rerun_triage():
         params: list[str | int] = [priority] + gmail_ids
     elif senders:
         # Sender filter with date range - join with emails_parsed to filter by from_addr
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(UTC) - timedelta(days=days)
 
         # Build LIKE conditions for each sender (supports glob patterns)
         # Always use LIKE with ESCAPE to properly handle _ in email addresses
@@ -137,7 +137,7 @@ def rerun_triage():
         params = [priority, cutoff.isoformat()] + sender_params
     else:
         # Label filter with date range - join with classifications to filter by Cortex label
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(UTC) - timedelta(days=days)
         query = """
             INSERT INTO queue (queue_name, payload, priority, status, created_at)
             SELECT DISTINCT ON (er.gmail_id)
