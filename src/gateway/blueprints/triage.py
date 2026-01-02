@@ -81,6 +81,14 @@ def rerun_triage():
     if not gmail_ids and not label and not senders:
         return jsonify({"error": "Must specify gmail_ids, label, or senders filter"}), 400
 
+    # Ensure filters are mutually exclusive
+    filters_provided = sum([bool(gmail_ids), bool(label), bool(senders)])
+    if filters_provided > 1:
+        return (
+            jsonify({"error": "Only one filter type allowed (gmail_ids, label, or senders)"}),
+            400,
+        )
+
     # Build insert query
     if gmail_ids:
         # Specific IDs
