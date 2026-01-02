@@ -1,6 +1,6 @@
 """Triage-related API endpoints."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from flask import Blueprint, jsonify, request
 
@@ -64,20 +64,43 @@ def rerun_triage():
     Request body:
         gmail_ids: List of specific Gmail IDs to rerun
         label: Label filter (e.g., "Cortex/Uncategorized")
+        senders: List of sender email addresses (supports glob patterns with *)
         days: Number of days to look back (default: 7)
         force: If true, rerun even if already classified
         priority: Queue priority (default: -100)
     """
     data = request.get_json() or {}
 
-    gmail_ids = data.get("gmail_ids", [])
+    # Validate input types
+    gmail_ids_raw = data.get("gmail_ids")
+    if gmail_ids_raw is not None:
+        if not isinstance(gmail_ids_raw, list) or not all(
+            isinstance(s, str) for s in gmail_ids_raw
+        ):
+            return jsonify({"error": "'gmail_ids' must be a list of strings"}), 400
+    gmail_ids = gmail_ids_raw or []
+
+    senders_raw = data.get("senders")
+    if senders_raw is not None:
+        if not isinstance(senders_raw, list) or not all(isinstance(s, str) for s in senders_raw):
+            return jsonify({"error": "'senders' must be a list of strings"}), 400
+    senders = [s for s in senders_raw or [] if s]
+
     label = data.get("label")
     days = data.get("days", 7)
     force = data.get("force", False)
     priority = data.get("priority", -100)
 
-    if not gmail_ids and not label:
-        return jsonify({"error": "Must specify either gmail_ids or label filter"}), 400
+    if not gmail_ids and not label and not senders:
+        return jsonify({"error": "Must specify gmail_ids, label, or senders filter"}), 400
+
+    # Ensure filters are mutually exclusive
+    filters_provided = sum(map(bool, (gmail_ids, label, senders)))
+    if filters_provided > 1:
+        return (
+            jsonify({"error": "Only one filter type allowed (gmail_ids, label, or senders)"}),
+            400,
+        )
 
     # Build insert query
     if gmail_ids:
@@ -95,9 +118,38 @@ def rerun_triage():
             WHERE er.gmail_id IN ({placeholders})
         """
         params: list[str | int] = [priority] + gmail_ids
+    elif senders:
+        # Sender filter with date range - join with emails_parsed to filter by from_addr
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+
+        # Build LIKE conditions for each sender (supports glob patterns)
+        # Always use LIKE with ESCAPE to properly handle _ in email addresses
+        sender_conditions = ["ep.from_addr LIKE %s ESCAPE '\\'" for _ in senders]
+        sender_clause = " OR ".join(sender_conditions)
+
+        query = f"""
+            INSERT INTO queue (queue_name, payload, priority, status, created_at)
+            SELECT DISTINCT ON (er.gmail_id)
+                'triage',
+                jsonb_build_object('email_id', er.id, 'gmail_id', er.gmail_id, 'rerun', true),
+                %s,
+                'pending',
+                NOW()
+            FROM emails_raw er
+            JOIN emails_parsed ep ON ep.gmail_id = er.gmail_id
+            WHERE er.created_at >= %s
+            AND ({sender_clause})
+        """
+
+        # Escape SQL LIKE special characters before converting glob * to SQL %
+        sender_params = [
+            s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "%")
+            for s in senders
+        ]
+        params = [priority, cutoff.isoformat()] + sender_params
     else:
         # Label filter with date range - join with classifications to filter by Cortex label
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = datetime.now(UTC) - timedelta(days=days)
         query = """
             INSERT INTO queue (queue_name, payload, priority, status, created_at)
             SELECT DISTINCT ON (er.gmail_id)
@@ -125,6 +177,10 @@ def rerun_triage():
             )
         """
 
+    # Add ORDER BY for DISTINCT ON queries (senders and label filters)
+    if senders or label:
+        query += " ORDER BY er.gmail_id, er.created_at DESC"
+
     # Handle any race conditions with existing queue entries
     query += " ON CONFLICT DO NOTHING"
 
@@ -135,6 +191,7 @@ def rerun_triage():
             "message": f"Enqueued {count} emails for triage rerun",
             "gmail_ids": gmail_ids if gmail_ids else None,
             "label": label,
+            "senders": senders if senders else None,
             "days": days if not gmail_ids else None,
             "force": force,
             "priority": priority,
