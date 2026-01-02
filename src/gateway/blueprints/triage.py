@@ -71,9 +71,18 @@ def rerun_triage():
     """
     data = request.get_json() or {}
 
-    gmail_ids = data.get("gmail_ids", [])
+    # Validate input types
+    gmail_ids_raw = data.get("gmail_ids")
+    if gmail_ids_raw is not None and not isinstance(gmail_ids_raw, list):
+        return jsonify({"error": "'gmail_ids' must be a list of strings"}), 400
+    gmail_ids = gmail_ids_raw or []
+
+    senders_raw = data.get("senders")
+    if senders_raw is not None and not isinstance(senders_raw, list):
+        return jsonify({"error": "'senders' must be a list of strings"}), 400
+    senders = [s for s in senders_raw or [] if s]
+
     label = data.get("label")
-    senders = [s for s in data.get("senders", []) if s]
     days = data.get("days", 7)
     force = data.get("force", False)
     priority = data.get("priority", -100)
