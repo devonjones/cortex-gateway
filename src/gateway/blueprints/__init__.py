@@ -7,4 +7,4 @@ from gateway.blueprints.queue import queue_bp
 from gateway.blueprints.sync import sync_bp
 from gateway.blueprints.triage import triage_bp
 
-__all__ = ["emails_bp", "queue_bp", "backfill_bp", "triage_bp", "sync_bp", "config_bp"]
+__all__ = ["backfill_bp", "config_bp", "emails_bp", "queue_bp", "sync_bp", "triage_bp"]

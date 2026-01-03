@@ -37,9 +37,9 @@ def get_active_config() -> Response | tuple[Response, int]:
 
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
-    except Exception as e:
+    except Exception:
         logger.error("Failed to export active config", exc_info=True)
-        return jsonify({"error": f"Failed to export config: {e}"}), 500
+        return jsonify({"error": "Failed to export active config"}), 500
 
 
 @config_bp.route("/versions", methods=["GET"])
@@ -114,9 +114,9 @@ def get_version(version: int) -> Response | tuple[Response, int]:
 
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
-    except Exception as e:
+    except Exception:
         logger.error("Failed to export config version", version=version, exc_info=True)
-        return jsonify({"error": f"Failed to export config: {e}"}), 500
+        return jsonify({"error": "Failed to export config version"}), 500
 
 
 @config_bp.route("", methods=["PUT", "POST"])
@@ -166,9 +166,9 @@ def update_config():
 
     except ValueError as e:
         return jsonify({"error": f"Validation failed: {e}"}), 400
-    except Exception as e:
+    except Exception:
         logger.error("Failed to import config", created_by=created_by, exc_info=True)
-        return jsonify({"error": f"Import failed: {e}"}), 500
+        return jsonify({"error": "Import failed"}), 500
 
 
 @config_bp.route("/validate", methods=["POST"])
@@ -222,13 +222,13 @@ def validate_config():
             }
         )
 
-    except Exception as e:
+    except Exception:
         logger.error("Config validation failed", exc_info=True)
         return (
             jsonify(
                 {
                     "valid": False,
-                    "errors": [str(e)],
+                    "errors": ["An unexpected error occurred during validation."],
                 }
             ),
             400,
@@ -296,9 +296,9 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
 
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
-    except Exception as e:
+    except Exception:
         logger.error("Rollback failed", version=version, created_by=created_by, exc_info=True)
-        return jsonify({"error": f"Rollback failed: {e}"}), 500
+        return jsonify({"error": "Rollback failed"}), 500
 
 
 @config_bp.route("/diff/<int:v1>/<int:v2>", methods=["GET"])
@@ -350,6 +350,6 @@ def diff_versions(v1: int, v2: int) -> Response | tuple[Response, int]:
 
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
-    except Exception as e:
+    except Exception:
         logger.error("Diff failed", v1=v1, v2=v2, exc_info=True)
-        return jsonify({"error": f"Diff failed: {e}"}), 500
+        return jsonify({"error": "Diff failed"}), 500
