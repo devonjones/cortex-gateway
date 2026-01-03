@@ -1,5 +1,7 @@
 """Triage config management API endpoints."""
 
+import difflib
+
 from flask import Blueprint, Response, jsonify, request
 
 from gateway.services.postgres import ConnectionContext, execute_one, execute_query
@@ -30,6 +32,8 @@ def get_active_config():
             headers={"Content-Disposition": "attachment; filename=config.yaml"},
         )
 
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
     except Exception as e:
         return jsonify({"error": f"Failed to export config: {e}"}), 500
 
@@ -260,16 +264,15 @@ def rollback_to_version(version: int):  # type: ignore[no-untyped-def]
             new_version = import_yaml_to_db(conn, yaml_content, created_by, notes)
 
             # Mark as rollback in database
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE triage_config_versions
-                SET rolled_back_from = %s
-                WHERE version = %s
-                """,
-                (version, new_version),
-            )
-            cursor.close()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE triage_config_versions
+                    SET rolled_back_from = %s
+                    WHERE version = %s
+                    """,
+                    (version, new_version),
+                )
             conn.commit()
 
         return (
@@ -310,13 +313,18 @@ def diff_versions(v1: int, v2: int):  # type: ignore[no-untyped-def]
             yaml1 = export_config_to_yaml(conn, version=v1)
             yaml2 = export_config_to_yaml(conn, version=v2)
 
-        # Simple line-by-line diff
+        # Use difflib for accurate line-by-line comparison
         lines1 = yaml1.splitlines()
         lines2 = yaml2.splitlines()
 
-        # Basic diff stats
-        added_lines = [line for line in lines2 if line not in lines1]
-        removed_lines = [line for line in lines1 if line not in lines2]
+        # Generate proper diff using difflib.ndiff
+        added_lines = []
+        removed_lines = []
+        for line in difflib.ndiff(lines1, lines2):
+            if line.startswith("+ "):
+                added_lines.append(line[2:])
+            elif line.startswith("- "):
+                removed_lines.append(line[2:])
 
         return jsonify(
             {
