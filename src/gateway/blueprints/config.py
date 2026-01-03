@@ -2,15 +2,18 @@
 
 import difflib
 
+import structlog
 from flask import Blueprint, Response, jsonify, request
 
 from gateway.services.postgres import ConnectionContext, execute_query
+
+logger = structlog.get_logger()
 
 config_bp = Blueprint("config", __name__)
 
 
 @config_bp.route("", methods=["GET"])
-def get_active_config():
+def get_active_config() -> Response | tuple[Response, int]:
     """Get the active config as YAML.
 
     Returns:
@@ -35,6 +38,7 @@ def get_active_config():
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
+        logger.error("Failed to export active config", exc_info=True)
         return jsonify({"error": f"Failed to export config: {e}"}), 500
 
 
@@ -85,7 +89,7 @@ def list_versions():
 
 
 @config_bp.route("/versions/<int:version>", methods=["GET"])
-def get_version(version: int):  # type: ignore[no-untyped-def]
+def get_version(version: int) -> Response | tuple[Response, int]:
     """Get a specific config version as YAML.
 
     Args:
@@ -111,6 +115,7 @@ def get_version(version: int):  # type: ignore[no-untyped-def]
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
+        logger.error("Failed to export config version", version=version, exc_info=True)
         return jsonify({"error": f"Failed to export config: {e}"}), 500
 
 
@@ -162,6 +167,7 @@ def update_config():
     except ValueError as e:
         return jsonify({"error": f"Validation failed: {e}"}), 400
     except Exception as e:
+        logger.error("Failed to import config", created_by=created_by, exc_info=True)
         return jsonify({"error": f"Import failed: {e}"}), 500
 
 
@@ -217,6 +223,7 @@ def validate_config():
         )
 
     except Exception as e:
+        logger.error("Config validation failed", exc_info=True)
         return (
             jsonify(
                 {
@@ -229,7 +236,7 @@ def validate_config():
 
 
 @config_bp.route("/rollback/<int:version>", methods=["POST"])
-def rollback_to_version(version: int):  # type: ignore[no-untyped-def]
+def rollback_to_version(version: int) -> Response | tuple[Response, int]:
     """Rollback to a previous config version.
 
     Creates a new version with the content of the specified version.
@@ -290,11 +297,12 @@ def rollback_to_version(version: int):  # type: ignore[no-untyped-def]
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
+        logger.error("Rollback failed", version=version, created_by=created_by, exc_info=True)
         return jsonify({"error": f"Rollback failed: {e}"}), 500
 
 
 @config_bp.route("/diff/<int:v1>/<int:v2>", methods=["GET"])
-def diff_versions(v1: int, v2: int):  # type: ignore[no-untyped-def]
+def diff_versions(v1: int, v2: int) -> Response | tuple[Response, int]:
     """Get a diff between two config versions.
 
     Args:
@@ -343,4 +351,5 @@ def diff_versions(v1: int, v2: int):  # type: ignore[no-untyped-def]
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
     except Exception as e:
+        logger.error("Diff failed", v1=v1, v2=v2, exc_info=True)
         return jsonify({"error": f"Diff failed: {e}"}), 500
