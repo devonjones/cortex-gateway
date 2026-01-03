@@ -4,7 +4,7 @@ import difflib
 
 from flask import Blueprint, Response, jsonify, request
 
-from gateway.services.postgres import ConnectionContext, execute_one, execute_query
+from gateway.services.postgres import ConnectionContext, execute_query
 
 config_bp = Blueprint("config", __name__)
 
@@ -61,18 +61,18 @@ def list_versions():
             created_by,
             notes,
             is_active,
-            rolled_back_from
+            rolled_back_from,
+            COUNT(*) OVER() as total
         FROM triage_config_versions
         ORDER BY version DESC
         LIMIT %s OFFSET %s
     """
 
-    versions = execute_query(query, (limit, offset))
+    rows = execute_query(query, (limit, offset))
 
-    # Get total count
-    count_query = "SELECT COUNT(*) as total FROM triage_config_versions"
-    count_result = execute_one(count_query)
-    total = count_result["total"] if count_result else 0
+    # Extract total and remove it from version records
+    total = rows[0]["total"] if rows else 0
+    versions = [{k: v for k, v in row.items() if k != "total"} for row in rows]
 
     return jsonify(
         {
@@ -318,13 +318,9 @@ def diff_versions(v1: int, v2: int):  # type: ignore[no-untyped-def]
         lines2 = yaml2.splitlines()
 
         # Generate proper diff using difflib.ndiff
-        added_lines = []
-        removed_lines = []
-        for line in difflib.ndiff(lines1, lines2):
-            if line.startswith("+ "):
-                added_lines.append(line[2:])
-            elif line.startswith("- "):
-                removed_lines.append(line[2:])
+        diff = list(difflib.ndiff(lines1, lines2))
+        added_lines = [line[2:] for line in diff if line.startswith("+ ")]
+        removed_lines = [line[2:] for line in diff if line.startswith("- ")]
 
         return jsonify(
             {
