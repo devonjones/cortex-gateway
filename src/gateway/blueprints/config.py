@@ -43,7 +43,7 @@ def get_active_config() -> Response | tuple[Response, int]:
 
 
 @config_bp.route("/versions", methods=["GET"])
-def list_versions():
+def list_versions() -> Response | tuple[Response, int]:
     """List all config versions.
 
     Query params:
@@ -53,8 +53,14 @@ def list_versions():
     Returns:
         200: List of versions with metadata
     """
-    limit = min(request.args.get("limit", 20, type=int), 100)
+    limit_param = request.args.get("limit", 20, type=int)
     offset = request.args.get("offset", 0, type=int)
+
+    # Validate parameters
+    if limit_param <= 0 or offset < 0:
+        return jsonify({"error": "limit must be positive and offset must be non-negative"}), 400
+
+    limit = min(limit_param, 100)
 
     query = """
         SELECT
@@ -120,7 +126,7 @@ def get_version(version: int) -> Response | tuple[Response, int]:
 
 
 @config_bp.route("", methods=["PUT", "POST"])
-def update_config():
+def update_config() -> Response | tuple[Response, int]:
     """Create new config version from YAML.
 
     Request body: YAML content (text/plain or application/yaml)
@@ -172,7 +178,7 @@ def update_config():
 
 
 @config_bp.route("/validate", methods=["POST"])
-def validate_config():
+def validate_config() -> Response | tuple[Response, int]:
     """Validate YAML config without saving.
 
     Request body: YAML content (text/plain or application/yaml)
