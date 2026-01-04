@@ -181,10 +181,21 @@ def update_config() -> Response | tuple[Response, int]:
         logger.warning("Invalid YAML in request to /config", error=str(e))
         return jsonify({"error": "Invalid YAML format"}), 400
     except ValueError as e:
-        logger.error("Failed to import config after validation", error=str(e), exc_info=True)
+        logger.error(
+            "Failed to import config after validation",
+            error=str(e),
+            created_by=created_by,
+            exc_info=True,
+        )
         return jsonify({"error": "Import failed"}), 500
-    except Exception:
-        logger.error("Failed to import config", created_by=created_by, notes=notes, exc_info=True)
+    except Exception as e:
+        logger.error(
+            "Failed to import config",
+            error=str(e),
+            created_by=created_by,
+            notes=notes,
+            exc_info=True,
+        )
         return jsonify({"error": "Import failed"}), 500
 
 
@@ -243,8 +254,8 @@ def validate_config() -> Response | tuple[Response, int]:
     except ValueError as e:
         logger.warning("Config validation failed in /validate", error=str(e))
         return jsonify({"error": "Validation failed"}), 400
-    except Exception:
-        logger.error("Config validation failed", exc_info=True)
+    except Exception as e:
+        logger.error("Config validation failed", error=str(e), exc_info=True)
         return jsonify({"error": "An unexpected error occurred during validation"}), 500
 
 
@@ -330,9 +341,14 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
             201,
         )
 
-    except Exception:
+    except Exception as e:
         logger.error(
-            "Rollback failed", version=version, created_by=created_by, notes=notes, exc_info=True
+            "Rollback failed",
+            error=str(e),
+            version=version,
+            created_by=created_by,
+            notes=notes,
+            exc_info=True,
         )
         return jsonify({"error": "Rollback failed"}), 500
 
