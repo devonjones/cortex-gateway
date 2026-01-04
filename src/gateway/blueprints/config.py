@@ -10,6 +10,7 @@ from cortex_utils.triage_config import (
     validate_rules,
 )
 from flask import Blueprint, Response, jsonify, request
+from yaml import YAMLError  # type: ignore[import]
 
 from gateway.services.postgres import ConnectionContext, execute_query
 
@@ -169,8 +170,11 @@ def update_config() -> Response | tuple[Response, int]:
             201,
         )
 
+    except YAMLError as e:
+        logger.warning("Invalid YAML in request to /config", error=str(e))
+        return jsonify({"error": "Invalid YAML format"}), 400
     except ValueError as e:
-        logger.error("Config validation failed", created_by=created_by, error=str(e), exc_info=True)
+        logger.warning("Validation failed for /config", error=str(e))
         return jsonify({"error": "Validation failed"}), 400
     except Exception:
         logger.error("Failed to import config", created_by=created_by, exc_info=True)
@@ -226,9 +230,12 @@ def validate_config() -> Response | tuple[Response, int]:
             }
         )
 
+    except YAMLError as e:
+        logger.warning("Invalid YAML in request to /validate", error=str(e))
+        return jsonify({"error": "Invalid YAML format"}), 400
     except Exception:
         logger.error("Config validation failed", exc_info=True)
-        return jsonify({"error": "An unexpected error occurred during validation."}), 500
+        return jsonify({"error": "An unexpected error occurred during validation"}), 500
 
 
 @config_bp.route("/rollback/<int:version>", methods=["POST"])
@@ -269,6 +276,7 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
             try:
                 new_version = import_yaml_to_db(conn, yaml_content, created_by, notes)
             except ValueError as e:
+                conn.rollback()
                 logger.error(
                     "Rollback failed: config from version is invalid",
                     version=version,
