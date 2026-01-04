@@ -10,7 +10,7 @@ from cortex_utils.triage_config import (
     validate_rules,
 )
 from flask import Blueprint, Response, jsonify, request
-from yaml import YAMLError  # type: ignore[import]
+from yaml import YAMLError
 
 from gateway.services.postgres import ConnectionContext, execute_query
 

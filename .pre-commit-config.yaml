@@ -30,7 +30,7 @@ repos:
     rev: v1.5.1
     hooks:
       - id: mypy
-        additional_dependencies: [flask]
+        additional_dependencies: [flask, types-PyYAML]
         args: [--ignore-missing-imports, --config-file=pyproject.toml]
         exclude: '^tests/'
 
