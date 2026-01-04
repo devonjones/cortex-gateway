@@ -154,6 +154,13 @@ def update_config() -> Response | tuple[Response, int]:
     notes = request.headers.get("X-Notes")
 
     try:
+        # Validate before opening DB connection
+        config = load_rules_from_string(yaml_content)
+        errors = validate_rules(config)
+        if errors:
+            return jsonify({"error": "Validation failed", "details": errors}), 400
+
+        # If validation passes, import to database
         with ConnectionContext() as conn:
             version = import_yaml_to_db(conn, yaml_content, created_by, notes)
             conn.commit()
@@ -233,6 +240,9 @@ def validate_config() -> Response | tuple[Response, int]:
     except YAMLError as e:
         logger.warning("Invalid YAML in request to /validate", error=str(e))
         return jsonify({"error": "Invalid YAML format"}), 400
+    except ValueError as e:
+        logger.warning("Config validation failed in /validate", error=str(e))
+        return jsonify({"error": "Validation failed"}), 400
     except Exception:
         logger.error("Config validation failed", exc_info=True)
         return jsonify({"error": "An unexpected error occurred during validation"}), 500
