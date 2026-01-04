@@ -211,7 +211,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "cortex-utils"
 version = "0.1.0"
-source = { git = "https://github.com/devonjones/cortex-utils.git?rev=main#f7c8d6db89be15a62a7a51c4ea86b60ffdd65614" }
+source = { git = "https://github.com/devonjones/cortex-utils.git?rev=main#cd8c4b779edf4e2239d432b08e762894be3dae72" }
 dependencies = [
     { name = "click" },
     { name = "docker" },
