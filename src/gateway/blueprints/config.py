@@ -185,6 +185,7 @@ def update_config() -> Response | tuple[Response, int]:
             "Failed to import config after validation",
             error=str(e),
             created_by=created_by,
+            notes=notes,
             exc_info=True,
         )
         return jsonify({"error": "Import failed"}), 500
@@ -301,6 +302,8 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
                 logger.error(
                     "Rollback failed: config from version is invalid",
                     version=version,
+                    created_by=created_by,
+                    notes=notes,
                     error=str(e),
                     exc_info=True,
                 )
