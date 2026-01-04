@@ -227,15 +227,7 @@ def validate_config() -> Response | tuple[Response, int]:
 
     except Exception:
         logger.error("Config validation failed", exc_info=True)
-        return (
-            jsonify(
-                {
-                    "valid": False,
-                    "errors": ["An unexpected error occurred during validation."],
-                }
-            ),
-            400,
-        )
+        return jsonify({"error": "An unexpected error occurred during validation."}), 500
 
 
 @config_bp.route("/rollback/<int:version>", methods=["POST"])
@@ -266,10 +258,32 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
     try:
         with ConnectionContext() as conn:
             # Export the target version
-            yaml_content = export_config_to_yaml(conn, version=version)
+            try:
+                yaml_content = export_config_to_yaml(conn, version=version)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 404
 
             # Import as new version with rollback marker
-            new_version = import_yaml_to_db(conn, yaml_content, created_by, notes)
+            try:
+                new_version = import_yaml_to_db(conn, yaml_content, created_by, notes)
+            except ValueError as e:
+                logger.error(
+                    "Rollback failed: config from version is invalid",
+                    version=version,
+                    error=str(e),
+                    exc_info=True,
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": (
+                                f"Failed to import config from version {version} "
+                                "as it is no longer valid."
+                            )
+                        }
+                    ),
+                    500,
+                )
 
             # Mark as rollback in database
             with conn.cursor() as cursor:
@@ -295,8 +309,6 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
             201,
         )
 
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 404
     except Exception:
         logger.error("Rollback failed", version=version, created_by=created_by, exc_info=True)
         return jsonify({"error": "Rollback failed"}), 500
