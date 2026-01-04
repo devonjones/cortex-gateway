@@ -23,7 +23,7 @@ def get_active_config() -> Response | tuple[Response, int]:
     """
     try:
         # Import here to avoid circular dependencies
-        from triage.db.config_loader import export_config_to_yaml
+        from cortex_utils.triage_config import export_config_to_yaml
 
         with ConnectionContext() as conn:
             # Export active version (None = active)
@@ -107,7 +107,7 @@ def get_version(version: int) -> Response | tuple[Response, int]:
         500: Error loading config
     """
     try:
-        from triage.db.config_loader import export_config_to_yaml
+        from cortex_utils.triage_config import export_config_to_yaml
 
         with ConnectionContext() as conn:
             yaml_content = export_config_to_yaml(conn, version=version)
@@ -125,186 +125,193 @@ def get_version(version: int) -> Response | tuple[Response, int]:
         return jsonify({"error": "Failed to export config version"}), 500
 
 
-@config_bp.route("", methods=["PUT", "POST"])
-def update_config() -> Response | tuple[Response, int]:
-    """Create new config version from YAML.
-
-    Request body: YAML content (text/plain or application/yaml)
-    Request headers:
-        X-Created-By: Username/email creating the config (required)
-        X-Notes: Optional description of changes
-
-    Returns:
-        201: New version created
-        400: Invalid YAML or validation errors
-        500: Import failed
-    """
-    # Get YAML content from request body
-    yaml_content = request.get_data(as_text=True)
-    if not yaml_content:
-        return jsonify({"error": "Empty request body"}), 400
-
-    # Get metadata from headers
-    created_by = request.headers.get("X-Created-By")
-    if not created_by:
-        return jsonify({"error": "Missing X-Created-By header"}), 400
-
-    notes = request.headers.get("X-Notes")
-
-    try:
-        from triage.db.config_loader import import_yaml_to_db
-
-        with ConnectionContext() as conn:
-            version = import_yaml_to_db(conn, yaml_content, created_by, notes)
-            conn.commit()
-
-        return (
-            jsonify(
-                {
-                    "message": "Config created successfully",
-                    "version": version,
-                    "created_by": created_by,
-                    "notes": notes,
-                }
-            ),
-            201,
-        )
-
-    except ValueError as e:
-        return jsonify({"error": f"Validation failed: {e}"}), 400
-    except Exception:
-        logger.error("Failed to import config", created_by=created_by, exc_info=True)
-        return jsonify({"error": "Import failed"}), 500
-
-
-@config_bp.route("/validate", methods=["POST"])
-def validate_config() -> Response | tuple[Response, int]:
-    """Validate YAML config without saving.
-
-    Request body: YAML content (text/plain or application/yaml)
-
-    Returns:
-        200: Valid config with stats
-        400: Invalid YAML or validation errors
-    """
-    yaml_content = request.get_data(as_text=True)
-    if not yaml_content:
-        return jsonify({"error": "Empty request body"}), 400
-
-    try:
-        from triage.engine.rules import load_rules_from_string, validate_rules
-
-        # Parse YAML
-        config = load_rules_from_string(yaml_content)
-
-        # Validate
-        errors = validate_rules(config)
-        if errors:
-            return (
-                jsonify(
-                    {
-                        "valid": False,
-                        "errors": errors,
-                    }
-                ),
-                400,
-            )
-
-        # Count components
-        chain_count = len(config.chains)
-        rule_count = sum(len(rules) for rules in config.chains.values())
-        priority_mappings = len(config.priority_email_mappings)
-        fallback_mappings = len(config.fallback_email_mappings)
-
-        return jsonify(
-            {
-                "valid": True,
-                "stats": {
-                    "chains": chain_count,
-                    "rules": rule_count,
-                    "priority_mappings": priority_mappings,
-                    "fallback_mappings": fallback_mappings,
-                },
-            }
-        )
-
-    except Exception:
-        logger.error("Config validation failed", exc_info=True)
-        return (
-            jsonify(
-                {
-                    "valid": False,
-                    "errors": ["An unexpected error occurred during validation."],
-                }
-            ),
-            400,
-        )
+# TODO: Temporarily disabled - requires import_yaml_to_db from triage package
+# Will be re-enabled after moving import logic to cortex-utils
+# @config_bp.route("", methods=["PUT", "POST"])
+# def update_config() -> Response | tuple[Response, int]:
+#     """Create new config version from YAML.
+#
+#     Request body: YAML content (text/plain or application/yaml)
+#     Request headers:
+#         X-Created-By: Username/email creating the config (required)
+#         X-Notes: Optional description of changes
+#
+#     Returns:
+#         201: New version created
+#         400: Invalid YAML or validation errors
+#         500: Import failed
+#     """
+#     # Get YAML content from request body
+#     yaml_content = request.get_data(as_text=True)
+#     if not yaml_content:
+#         return jsonify({"error": "Empty request body"}), 400
+#
+#     # Get metadata from headers
+#     created_by = request.headers.get("X-Created-By")
+#     if not created_by:
+#         return jsonify({"error": "Missing X-Created-By header"}), 400
+#
+#     notes = request.headers.get("X-Notes")
+#
+#     try:
+#         from triage.db.config_loader import import_yaml_to_db
+#
+#         with ConnectionContext() as conn:
+#             version = import_yaml_to_db(conn, yaml_content, created_by, notes)
+#             conn.commit()
+#
+#         return (
+#             jsonify(
+#                 {
+#                     "message": "Config created successfully",
+#                     "version": version,
+#                     "created_by": created_by,
+#                     "notes": notes,
+#                 }
+#             ),
+#             201,
+#         )
+#
+#     except ValueError as e:
+#         return jsonify({"error": f"Validation failed: {e}"}), 400
+#     except Exception:
+#         logger.error("Failed to import config", created_by=created_by, exc_info=True)
+#         return jsonify({"error": "Import failed"}), 500
 
 
-@config_bp.route("/rollback/<int:version>", methods=["POST"])
-def rollback_to_version(version: int) -> Response | tuple[Response, int]:
-    """Rollback to a previous config version.
+# TODO: Temporarily disabled - requires load_rules_from_string/validate_rules from triage package
+# Will be re-enabled after moving validation logic to cortex-utils
+# @config_bp.route("/validate", methods=["POST"])
+# def validate_config() -> Response | tuple[Response, int]:
+#     """Validate YAML config without saving.
+#
+#     Request body: YAML content (text/plain or application/yaml)
+#
+#     Returns:
+#         200: Valid config with stats
+#         400: Invalid YAML or validation errors
+#     """
+#     yaml_content = request.get_data(as_text=True)
+#     if not yaml_content:
+#         return jsonify({"error": "Empty request body"}), 400
+#
+#     try:
+#         from triage.engine.rules import load_rules_from_string, validate_rules
+#
+#         # Parse YAML
+#         config = load_rules_from_string(yaml_content)
+#
+#         # Validate
+#         errors = validate_rules(config)
+#         if errors:
+#             return (
+#                 jsonify(
+#                     {
+#                         "valid": False,
+#                         "errors": errors,
+#                     }
+#                 ),
+#                 400,
+#             )
+#
+#         # Count components
+#         chain_count = len(config.chains)
+#         rule_count = sum(len(rules) for rules in config.chains.values())
+#         priority_mappings = len(config.priority_email_mappings)
+#         fallback_mappings = len(config.fallback_email_mappings)
+#
+#         return jsonify(
+#             {
+#                 "valid": True,
+#                 "stats": {
+#                     "chains": chain_count,
+#                     "rules": rule_count,
+#                     "priority_mappings": priority_mappings,
+#                     "fallback_mappings": fallback_mappings,
+#                 },
+#             }
+#         )
+#
+#     except Exception:
+#         logger.error("Config validation failed", exc_info=True)
+#         return (
+#             jsonify(
+#                 {
+#                     "valid": False,
+#                     "errors": ["An unexpected error occurred during validation."],
+#                 }
+#             ),
+#             400,
+#         )
 
-    Creates a new version with the content of the specified version.
 
-    Args:
-        version: Version number to rollback to
-
-    Request headers:
-        X-Created-By: Username/email performing rollback (required)
-        X-Notes: Optional reason for rollback
-
-    Returns:
-        201: Rollback successful, new version created
-        404: Version not found
-        400: Missing required headers
-        500: Rollback failed
-    """
-    created_by = request.headers.get("X-Created-By")
-    if not created_by:
-        return jsonify({"error": "Missing X-Created-By header"}), 400
-
-    notes = request.headers.get("X-Notes") or f"Rollback to version {version}"
-
-    try:
-        from triage.db.config_loader import export_config_to_yaml, import_yaml_to_db
-
-        with ConnectionContext() as conn:
-            # Export the target version
-            yaml_content = export_config_to_yaml(conn, version=version)
-
-            # Import as new version with rollback marker
-            new_version = import_yaml_to_db(conn, yaml_content, created_by, notes)
-
-            # Mark as rollback in database
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE triage_config_versions
-                    SET rolled_back_from = %s
-                    WHERE version = %s
-                    """,
-                    (version, new_version),
-                )
-            conn.commit()
-
-        return (
-            jsonify(
-                {
-                    "message": f"Rolled back to version {version}",
-                    "new_version": new_version,
-                    "rolled_back_from": version,
-                    "created_by": created_by,
-                }
-            ),
-            201,
-        )
-
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 404
-    except Exception:
-        logger.error("Rollback failed", version=version, created_by=created_by, exc_info=True)
-        return jsonify({"error": "Rollback failed"}), 500
+# TODO: Temporarily disabled - requires import_yaml_to_db from triage package
+# Will be re-enabled after moving import logic to cortex-utils
+# @config_bp.route("/rollback/<int:version>", methods=["POST"])
+# def rollback_to_version(version: int) -> Response | tuple[Response, int]:
+#     """Rollback to a previous config version.
+#
+#     Creates a new version with the content of the specified version.
+#
+#     Args:
+#         version: Version number to rollback to
+#
+#     Request headers:
+#         X-Created-By: Username/email performing rollback (required)
+#         X-Notes: Optional reason for rollback
+#
+#     Returns:
+#         201: Rollback successful, new version created
+#         404: Version not found
+#         400: Missing required headers
+#         500: Rollback failed
+#     """
+#     created_by = request.headers.get("X-Created-By")
+#     if not created_by:
+#         return jsonify({"error": "Missing X-Created-By header"}), 400
+#
+#     notes = request.headers.get("X-Notes") or f"Rollback to version {version}"
+#
+#     try:
+#         from cortex_utils.triage_config import export_config_to_yaml
+#         from triage.db.config_loader import import_yaml_to_db
+#
+#         with ConnectionContext() as conn:
+#             # Export the target version
+#             yaml_content = export_config_to_yaml(conn, version=version)
+#
+#             # Import as new version with rollback marker
+#             new_version = import_yaml_to_db(conn, yaml_content, created_by, notes)
+#
+#             # Mark as rollback in database
+#             with conn.cursor() as cursor:
+#                 cursor.execute(
+#                     """
+#                     UPDATE triage_config_versions
+#                     SET rolled_back_from = %s
+#                     WHERE version = %s
+#                     """,
+#                     (version, new_version),
+#                 )
+#             conn.commit()
+#
+#         return (
+#             jsonify(
+#                 {
+#                     "message": f"Rolled back to version {version}",
+#                     "new_version": new_version,
+#                     "rolled_back_from": version,
+#                     "created_by": created_by,
+#                 }
+#             ),
+#             201,
+#         )
+#
+#     except ValueError as e:
+#         return jsonify({"error": str(e)}), 404
+#     except Exception:
+#         logger.error("Rollback failed", version=version, created_by=created_by, exc_info=True)
+#         return jsonify({"error": "Rollback failed"}), 500
 
 
 @config_bp.route("/diff/<int:v1>/<int:v2>", methods=["GET"])
@@ -321,7 +328,7 @@ def diff_versions(v1: int, v2: int) -> Response | tuple[Response, int]:
         500: Diff failed
     """
     try:
-        from triage.db.config_loader import export_config_to_yaml
+        from cortex_utils.triage_config import export_config_to_yaml
 
         with ConnectionContext() as conn:
             yaml1 = export_config_to_yaml(conn, version=v1)
