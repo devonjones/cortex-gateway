@@ -158,7 +158,7 @@ def update_config() -> Response | tuple[Response, int]:
         config = load_rules_from_string(yaml_content)
         errors = validate_rules(config)
         if errors:
-            return jsonify({"error": "Validation failed", "details": errors}), 400
+            return jsonify({"error": "Validation failed", "errors": errors}), 400
 
         # If validation passes, import to database
         with ConnectionContext() as conn:
