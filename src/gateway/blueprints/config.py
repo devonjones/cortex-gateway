@@ -170,7 +170,8 @@ def update_config() -> Response | tuple[Response, int]:
         )
 
     except ValueError as e:
-        return jsonify({"error": f"Validation failed: {e}"}), 400
+        logger.error("Config validation failed", created_by=created_by, error=str(e), exc_info=True)
+        return jsonify({"error": "Validation failed"}), 400
     except Exception:
         logger.error("Failed to import config", created_by=created_by, exc_info=True)
         return jsonify({"error": "Import failed"}), 500
@@ -261,7 +262,8 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
             try:
                 yaml_content = export_config_to_yaml(conn, version=version)
             except ValueError as e:
-                return jsonify({"error": str(e)}), 404
+                logger.error("Version not found", version=version, error=str(e), exc_info=True)
+                return jsonify({"error": f"Version {version} not found"}), 404
 
             # Import as new version with rollback marker
             try:
