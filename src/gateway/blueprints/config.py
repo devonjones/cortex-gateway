@@ -181,8 +181,8 @@ def update_config() -> Response | tuple[Response, int]:
         logger.warning("Invalid YAML in request to /config", error=str(e))
         return jsonify({"error": "Invalid YAML format"}), 400
     except ValueError as e:
-        logger.warning("Validation failed for /config", error=str(e))
-        return jsonify({"error": "Validation failed"}), 400
+        logger.error("Failed to import config after validation", error=str(e), exc_info=True)
+        return jsonify({"error": "Import failed"}), 500
     except Exception:
         logger.error("Failed to import config", created_by=created_by, exc_info=True)
         return jsonify({"error": "Import failed"}), 500
@@ -324,6 +324,7 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
                     "new_version": new_version,
                     "rolled_back_from": version,
                     "created_by": created_by,
+                    "notes": notes,
                 }
             ),
             201,
