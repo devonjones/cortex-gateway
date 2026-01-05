@@ -1,0 +1,482 @@
+"""Email mapping management API endpoints.
+
+Provides CRUD operations for priority and fallback email mappings.
+Changes to mappings automatically trigger targeted re-enqueue by sender.
+"""
+
+from typing import Any
+
+import structlog
+from flask import Blueprint, Response, jsonify, request
+
+from gateway.services.postgres import ConnectionContext, execute_query
+
+logger = structlog.get_logger()
+
+mappings_bp = Blueprint("mappings", __name__)
+
+
+@mappings_bp.route("", methods=["GET"])
+def list_mappings() -> Response | tuple[Response, int]:
+    """List all email mappings.
+
+    Query params:
+        type: priority | fallback (optional, filter by type)
+        limit: Max results (default: 100, max: 1000)
+        offset: Pagination offset (default: 0)
+
+    Returns:
+        200: List of mappings with metadata
+    """
+    mapping_type = request.args.get("type")
+    limit_param = request.args.get("limit", 100, type=int)
+    offset = request.args.get("offset", 0, type=int)
+
+    # Validate parameters
+    if limit_param <= 0 or offset < 0:
+        return jsonify({"error": "limit must be positive and offset must be non-negative"}), 400
+
+    limit = min(limit_param, 1000)
+
+    query = """
+        SELECT
+            id,
+            mapping_type,
+            email_address,
+            label,
+            archive,
+            mark_read,
+            created_at,
+            updated_at,
+            created_by,
+            updated_by,
+            COUNT(*) OVER() as total
+        FROM triage_email_mappings
+        WHERE deleted_at IS NULL
+    """
+    params: list[str | int] = []
+
+    if mapping_type:
+        if mapping_type not in ("priority", "fallback"):
+            return jsonify({"error": "type must be 'priority' or 'fallback'"}), 400
+        query += " AND mapping_type = %s"
+        params.append(mapping_type)
+
+    query += " ORDER BY mapping_type, email_address LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
+
+    rows = execute_query(query, tuple(params))
+
+    # Extract total and remove it from mapping records
+    total = rows[0]["total"] if rows else 0
+    mappings = [{k: v for k, v in row.items() if k != "total"} for row in rows]
+
+    return jsonify(
+        {
+            "mappings": mappings,
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+        }
+    )
+
+
+@mappings_bp.route("", methods=["POST"])
+def add_mapping() -> Response | tuple[Response, int]:
+    """Add a new email mapping.
+
+    Request body:
+        {
+            "type": "priority" | "fallback",
+            "email": "foo@example.com",
+            "label": "Label/Name",
+            "archive": true | false | null (optional),
+            "mark_read": true | false | null (optional)
+        }
+
+    Request headers:
+        X-Created-By: user identifier (required)
+
+    Returns:
+        201: Mapping created, re-enqueue triggered
+        400: Invalid input
+        409: Mapping already exists
+        500: Internal error
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
+    created_by = request.headers.get("X-Created-By")
+    if not created_by:
+        return jsonify({"error": "Missing X-Created-By header"}), 400
+
+    # Validate required fields
+    if not all(k in data for k in ["type", "email", "label"]):
+        return jsonify({"error": "Missing required fields: type, email, label"}), 400
+
+    mapping_type = data["type"]
+    if mapping_type not in ("priority", "fallback"):
+        return jsonify({"error": "type must be 'priority' or 'fallback'"}), 400
+
+    email = data["email"].lower().strip()
+    if not email:
+        return jsonify({"error": "email cannot be empty"}), 400
+
+    label = data["label"]
+    if not label:
+        return jsonify({"error": "label cannot be empty"}), 400
+
+    archive = data.get("archive")
+    mark_read = data.get("mark_read")
+
+    try:
+        with ConnectionContext() as conn:
+            with conn.cursor() as cursor:
+                # Insert mapping
+                cursor.execute(
+                    """
+                    INSERT INTO triage_email_mappings (
+                        mapping_type, email_address, label, archive, mark_read,
+                        created_by, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    RETURNING id
+                    """,
+                    (mapping_type, email, label, archive, mark_read, created_by),
+                )
+
+                mapping_id = cursor.fetchone()["id"]
+
+                # Trigger re-enqueue for this sender
+                rows_enqueued = _enqueue_sender_for_reprocess(cursor, email, priority=-200)
+
+                # Signal workers to reload mappings
+                cursor.execute(
+                    """
+                    INSERT INTO worker_signals (signal_type, target_worker, created_at)
+                    VALUES ('mappings_reload', 'triage', NOW())
+                    """
+                )
+
+            conn.commit()
+
+        logger.info(
+            "Mapping created",
+            mapping_id=mapping_id,
+            email=email,
+            type=mapping_type,
+            label=label,
+            rows_enqueued=rows_enqueued,
+            created_by=created_by,
+        )
+
+        return (
+            jsonify(
+                {
+                    "message": "Mapping created and emails enqueued for re-triage",
+                    "mapping_id": mapping_id,
+                    "email": email,
+                    "type": mapping_type,
+                    "rows_enqueued": rows_enqueued,
+                }
+            ),
+            201,
+        )
+
+    except Exception as e:
+        logger.error("Failed to create mapping", error=str(e), exc_info=True)
+        return jsonify({"error": "Failed to create mapping"}), 500
+
+
+@mappings_bp.route("/<int:mapping_id>", methods=["PUT"])
+def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
+    """Update an existing mapping.
+
+    Request body (all fields optional, only provide fields to change):
+        {
+            "label": "New/Label",
+            "archive": true | false | null,
+            "mark_read": true | false | null
+        }
+
+    Request headers:
+        X-Updated-By: user identifier (required)
+
+    Returns:
+        200: Mapping updated, re-enqueue triggered
+        404: Mapping not found
+        400: Invalid input
+        500: Internal error
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body required"}), 400
+
+    updated_by = request.headers.get("X-Updated-By")
+    if not updated_by:
+        return jsonify({"error": "Missing X-Updated-By header"}), 400
+
+    # Build UPDATE query dynamically
+    updates = []
+    params = []
+
+    if "label" in data:
+        if not data["label"]:
+            return jsonify({"error": "label cannot be empty"}), 400
+        updates.append("label = %s")
+        params.append(data["label"])
+
+    if "archive" in data:
+        updates.append("archive = %s")
+        params.append(data["archive"])
+
+    if "mark_read" in data:
+        updates.append("mark_read = %s")
+        params.append(data["mark_read"])
+
+    if not updates:
+        return jsonify({"error": "No fields to update"}), 400
+
+    updates.append("updated_by = %s")
+    params.append(updated_by)
+    updates.append("updated_at = NOW()")
+
+    params.append(mapping_id)
+
+    try:
+        with ConnectionContext() as conn:
+            with conn.cursor() as cursor:
+                # Get current mapping for re-enqueue
+                cursor.execute(
+                    """
+                    SELECT email_address FROM triage_email_mappings
+                    WHERE id = %s AND deleted_at IS NULL
+                    """,
+                    (mapping_id,),
+                )
+
+                row = cursor.fetchone()
+                if not row:
+                    return jsonify({"error": "Mapping not found"}), 404
+
+                email = row["email_address"]
+
+                # Update mapping
+                query = f"""
+                    UPDATE triage_email_mappings
+                    SET {', '.join(updates)}
+                    WHERE id = %s AND deleted_at IS NULL
+                    RETURNING *
+                """
+                cursor.execute(query, tuple(params))
+                updated = cursor.fetchone()
+
+                if not updated:
+                    return jsonify({"error": "Mapping not found"}), 404
+
+                # Trigger re-enqueue (label changed, treat as remove + add)
+                rows_enqueued = _enqueue_sender_for_reprocess(cursor, email, priority=-200)
+
+                # Signal workers to reload mappings
+                cursor.execute(
+                    """
+                    INSERT INTO worker_signals (signal_type, target_worker, created_at)
+                    VALUES ('mappings_reload', 'triage', NOW())
+                    """
+                )
+
+            conn.commit()
+
+        logger.info(
+            "Mapping updated",
+            mapping_id=mapping_id,
+            email=email,
+            rows_enqueued=rows_enqueued,
+            updated_by=updated_by,
+        )
+
+        return jsonify(
+            {
+                "message": "Mapping updated and emails enqueued for re-triage",
+                "mapping": updated,
+                "rows_enqueued": rows_enqueued,
+            }
+        )
+
+    except Exception as e:
+        logger.error("Failed to update mapping", error=str(e), exc_info=True)
+        return jsonify({"error": "Failed to update mapping"}), 500
+
+
+@mappings_bp.route("/<int:mapping_id>", methods=["DELETE"])
+def delete_mapping(mapping_id: int) -> Response | tuple[Response, int]:
+    """Delete (soft-delete) a mapping.
+
+    Request headers:
+        X-Updated-By: user identifier (required)
+
+    Returns:
+        200: Mapping deleted, re-enqueue triggered
+        404: Mapping not found
+        500: Internal error
+    """
+    updated_by = request.headers.get("X-Updated-By")
+    if not updated_by:
+        return jsonify({"error": "Missing X-Updated-By header"}), 400
+
+    try:
+        with ConnectionContext() as conn:
+            with conn.cursor() as cursor:
+                # Soft delete
+                cursor.execute(
+                    """
+                    UPDATE triage_email_mappings
+                    SET deleted_at = NOW(), updated_by = %s
+                    WHERE id = %s AND deleted_at IS NULL
+                    RETURNING email_address
+                    """,
+                    (updated_by, mapping_id),
+                )
+
+                row = cursor.fetchone()
+                if not row:
+                    return jsonify({"error": "Mapping not found"}), 404
+
+                email = row["email_address"]
+
+                # Trigger re-enqueue (mapping removed, emails need re-evaluation)
+                rows_enqueued = _enqueue_sender_for_reprocess(cursor, email, priority=-200)
+
+                # Signal workers to reload mappings
+                cursor.execute(
+                    """
+                    INSERT INTO worker_signals (signal_type, target_worker, created_at)
+                    VALUES ('mappings_reload', 'triage', NOW())
+                    """
+                )
+
+            conn.commit()
+
+        logger.info(
+            "Mapping deleted",
+            mapping_id=mapping_id,
+            email=email,
+            rows_enqueued=rows_enqueued,
+            updated_by=updated_by,
+        )
+
+        return jsonify(
+            {
+                "message": "Mapping deleted and emails enqueued for re-triage",
+                "email": email,
+                "rows_enqueued": rows_enqueued,
+            }
+        )
+
+    except Exception as e:
+        logger.error("Failed to delete mapping", error=str(e), exc_info=True)
+        return jsonify({"error": "Failed to delete mapping"}), 500
+
+
+@mappings_bp.route("/history/<email_address>", methods=["GET"])
+def get_mapping_history(email_address: str) -> Response | tuple[Response, int]:
+    """Get change history for a specific email address.
+
+    Path params:
+        email_address: Email address to get history for
+
+    Query params:
+        limit: Max results (default: 50, max: 500)
+        offset: Pagination offset (default: 0)
+
+    Returns:
+        200: History of changes for this email address
+        404: No history found
+    """
+    limit_param = request.args.get("limit", 50, type=int)
+    offset = request.args.get("offset", 0, type=int)
+
+    # Validate parameters
+    if limit_param <= 0 or offset < 0:
+        return jsonify({"error": "limit must be positive and offset must be non-negative"}), 400
+
+    limit = min(limit_param, 500)
+
+    query = """
+        SELECT
+            id,
+            mapping_id,
+            mapping_type,
+            email_address,
+            label,
+            archive,
+            mark_read,
+            change_type,
+            changed_at,
+            changed_by,
+            previous_label,
+            previous_archive,
+            previous_mark_read,
+            COUNT(*) OVER() as total
+        FROM triage_email_mappings_history
+        WHERE LOWER(email_address) = LOWER(%s)
+        ORDER BY changed_at DESC
+        LIMIT %s OFFSET %s
+    """
+
+    rows = execute_query(query, (email_address, limit, offset))
+
+    if not rows:
+        return jsonify({"error": "No history found for this email address"}), 404
+
+    # Extract total and remove it from history records
+    total = rows[0]["total"] if rows else 0
+    history = [{k: v for k, v in row.items() if k != "total"} for row in rows]
+
+    return jsonify(
+        {
+            "email_address": email_address,
+            "history": history,
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+        }
+    )
+
+
+def _enqueue_sender_for_reprocess(cursor: Any, email_address: str, priority: int = -200) -> int:
+    """Re-enqueue all emails from a specific sender for triage.
+
+    Args:
+        cursor: Database cursor
+        email_address: Email address to filter by (exact match, case-insensitive)
+        priority: Queue priority (default: -200, below backfill at -100)
+
+    Returns:
+        Number of rows enqueued
+    """
+    cursor.execute(
+        """
+        INSERT INTO queue (queue_name, payload, priority, status, created_at)
+        SELECT DISTINCT ON (er.gmail_id)
+            'triage',
+            jsonb_build_object(
+                'email_id', er.id,
+                'gmail_id', er.gmail_id,
+                'rerun', true,
+                'reason', 'mapping_change'
+            ),
+            %s,
+            'pending',
+            NOW()
+        FROM emails_raw er
+        JOIN emails_parsed ep ON ep.gmail_id = er.gmail_id
+        WHERE LOWER(ep.from_addr) = LOWER(%s)
+        ON CONFLICT (queue_name, (payload->>'gmail_id'), status)
+        WHERE status IN ('pending', 'processing')
+        DO NOTHING
+        """,
+        (priority, email_address),
+    )
+
+    return cursor.rowcount
