@@ -248,3 +248,67 @@ def list_classifications():
             "count": len(results),
         }
     )
+
+
+@triage_bp.route("/convergence/status")
+def convergence_status():
+    """Get convergence status - how many emails have outdated config versions.
+
+    Returns:
+        {
+            "current_version": Active config version,
+            "emails_behind": Total emails needing convergence,
+            "priority_senders_count": Emails from priority senders (bulk updateable),
+            "non_priority_count": Emails needing re-triage,
+            "oldest_version": Oldest config version still in use
+        }
+    """
+    # Get current active config version
+    version_query = "SELECT version FROM triage_config_versions WHERE is_active = TRUE LIMIT 1"
+    version_rows = postgres.execute_query(version_query)
+
+    if not version_rows:
+        return jsonify({"error": "No active config version found"}), 500
+
+    current_version = version_rows[0]["version"]
+
+    # Count priority sender emails (can be bulk-updated)
+    priority_count_query = """
+        SELECT COUNT(*) as count
+        FROM classifications c
+        WHERE c.config_version_id < %s
+          AND EXISTS (
+            SELECT 1
+            FROM emails_parsed ep
+            JOIN triage_email_mappings tem
+              ON LOWER(ep.from_addr) = LOWER(tem.email_address)
+            WHERE ep.gmail_id = c.gmail_id
+              AND tem.mapping_type = 'priority'
+              AND tem.deleted_at IS NULL
+          )
+    """
+    priority_rows = postgres.execute_query(priority_count_query, (current_version,))
+    priority_count = priority_rows[0]["count"] if priority_rows else 0
+
+    # Count total emails behind
+    total_behind_query = """
+        SELECT COUNT(*) as count, MIN(config_version_id) as oldest_version
+        FROM classifications
+        WHERE config_version_id < %s
+    """
+    total_rows = postgres.execute_query(total_behind_query, (current_version,))
+    total_behind = total_rows[0]["count"] if total_rows else 0
+    oldest_version = total_rows[0]["oldest_version"] if total_rows else current_version
+
+    # Non-priority count (emails needing actual re-triage)
+    non_priority_count = total_behind - priority_count
+
+    return jsonify(
+        {
+            "current_version": current_version,
+            "emails_behind": total_behind,
+            "priority_senders_count": priority_count,
+            "non_priority_count": non_priority_count,
+            "oldest_version": oldest_version,
+        }
+    )
