@@ -134,7 +134,12 @@ def add_mapping() -> Response | tuple[Response, int]:
     label = label_raw.strip()
 
     archive = data.get("archive")
+    if "archive" in data and not (isinstance(archive, bool) or archive is None):
+        return jsonify({"error": "archive must be a boolean or null"}), 400
+
     mark_read = data.get("mark_read")
+    if "mark_read" in data and not (isinstance(mark_read, bool) or mark_read is None):
+        return jsonify({"error": "mark_read must be a boolean or null"}), 400
 
     try:
         with ConnectionContext() as conn:
