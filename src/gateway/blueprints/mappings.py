@@ -15,6 +15,10 @@ logger = structlog.get_logger()
 
 mappings_bp = Blueprint("mappings", __name__)
 
+# Priority for re-processing emails when mappings change
+# Lower than default (0) and backfill (-100) to avoid blocking real-time processing
+MAPPING_CHANGE_REPROCESS_PRIORITY = -200
+
 
 @mappings_bp.route("", methods=["GET"])
 def list_mappings() -> Response | tuple[Response, int]:
@@ -253,22 +257,7 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
     try:
         with ConnectionContext() as conn:
             with conn.cursor() as cursor:
-                # Get current mapping for re-enqueue
-                cursor.execute(
-                    """
-                    SELECT email_address FROM triage_email_mappings
-                    WHERE id = %s AND deleted_at IS NULL
-                    """,
-                    (mapping_id,),
-                )
-
-                row = cursor.fetchone()
-                if not row:
-                    return jsonify({"error": "Mapping not found"}), 404
-
-                email = row["email_address"]
-
-                # Update mapping
+                # Update mapping and get data for side-effects
                 query = f"""
                     UPDATE triage_email_mappings
                     SET {', '.join(updates)}
@@ -280,6 +269,8 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
 
                 if not updated:
                     return jsonify({"error": "Mapping not found"}), 404
+
+                email = updated["email_address"]
 
                 # Trigger side-effects for mapping change
                 rows_enqueued = _trigger_mapping_change_side_effects(cursor, email)
@@ -445,7 +436,9 @@ def _trigger_mapping_change_side_effects(cursor: Any, email_address: str) -> int
     Returns:
         Number of rows enqueued
     """
-    rows_enqueued = _enqueue_sender_for_reprocess(cursor, email_address, priority=-200)
+    rows_enqueued = _enqueue_sender_for_reprocess(
+        cursor, email_address, priority=MAPPING_CHANGE_REPROCESS_PRIORITY
+    )
     cursor.execute(
         """
         INSERT INTO worker_signals (signal_type, target_worker, created_at)
@@ -456,13 +449,15 @@ def _trigger_mapping_change_side_effects(cursor: Any, email_address: str) -> int
     return rows_enqueued
 
 
-def _enqueue_sender_for_reprocess(cursor: Any, email_address: str, priority: int = -200) -> int:
+def _enqueue_sender_for_reprocess(
+    cursor: Any, email_address: str, priority: int = MAPPING_CHANGE_REPROCESS_PRIORITY
+) -> int:
     """Re-enqueue all emails from a specific sender for triage.
 
     Args:
         cursor: Database cursor
         email_address: Email address to filter by (exact match, case-insensitive)
-        priority: Queue priority (default: -200, below backfill at -100)
+        priority: Queue priority (default: MAPPING_CHANGE_REPROCESS_PRIORITY)
 
     Returns:
         Number of rows enqueued
