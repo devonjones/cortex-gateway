@@ -116,16 +116,18 @@ def add_mapping() -> Response | tuple[Response, int]:
         return jsonify({"error": "Missing required fields: type, email, label"}), 400
 
     mapping_type = data["type"]
-    if mapping_type not in ("priority", "fallback"):
-        return jsonify({"error": "type must be 'priority' or 'fallback'"}), 400
+    if not isinstance(mapping_type, str) or mapping_type.strip() not in ("priority", "fallback"):
+        return jsonify({"error": "type must be a string: 'priority' or 'fallback'"}), 400
 
-    email = data["email"].lower().strip()
-    if not email:
-        return jsonify({"error": "email cannot be empty"}), 400
+    email_raw = data["email"]
+    if not isinstance(email_raw, str) or not email_raw.strip():
+        return jsonify({"error": "email must be a non-empty string"}), 400
+    email = email_raw.lower().strip()
 
-    label = data["label"]
-    if not label:
-        return jsonify({"error": "label cannot be empty"}), 400
+    label_raw = data["label"]
+    if not isinstance(label_raw, str) or not label_raw.strip():
+        return jsonify({"error": "label must be a non-empty string"}), 400
+    label = label_raw.strip()
 
     archive = data.get("archive")
     mark_read = data.get("mark_read")
@@ -216,21 +218,28 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
 
     # Build UPDATE query dynamically
     updates = []
-    params = []
+    params: list[str | int | bool | None] = []
 
     if "label" in data:
-        if not data["label"]:
-            return jsonify({"error": "label cannot be empty"}), 400
+        label = data["label"]
+        if not isinstance(label, str) or not label.strip():
+            return jsonify({"error": "label must be a non-empty string"}), 400
         updates.append("label = %s")
-        params.append(data["label"])
+        params.append(label.strip())
 
     if "archive" in data:
+        archive = data["archive"]
+        if not (isinstance(archive, bool) or archive is None):
+            return jsonify({"error": "archive must be a boolean or null"}), 400
         updates.append("archive = %s")
-        params.append(data["archive"])
+        params.append(archive)
 
     if "mark_read" in data:
+        mark_read = data["mark_read"]
+        if not (isinstance(mark_read, bool) or mark_read is None):
+            return jsonify({"error": "mark_read must be a boolean or null"}), 400
         updates.append("mark_read = %s")
-        params.append(data["mark_read"])
+        params.append(mark_read)
 
     if not updates:
         return jsonify({"error": "No fields to update"}), 400
