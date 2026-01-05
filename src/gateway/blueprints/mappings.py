@@ -133,30 +133,28 @@ def add_mapping() -> Response | tuple[Response, int]:
     try:
         with ConnectionContext() as conn:
             with conn.cursor() as cursor:
-                # Insert mapping
+                # Insert mapping, handling conflicts atomically
                 cursor.execute(
                     """
                     INSERT INTO triage_email_mappings (
                         mapping_type, email_address, label, archive, mark_read,
                         created_by, created_at, updated_at
                     ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (mapping_type, email_address) WHERE deleted_at IS NULL
+                    DO NOTHING
                     RETURNING id
                     """,
                     (mapping_type, email, label, archive, mark_read, created_by),
                 )
 
-                mapping_id = cursor.fetchone()["id"]
+                result = cursor.fetchone()
+                if not result:
+                    return jsonify({"error": "Mapping for this email and type already exists"}), 409
 
-                # Trigger re-enqueue for this sender
-                rows_enqueued = _enqueue_sender_for_reprocess(cursor, email, priority=-200)
+                mapping_id = result["id"]
 
-                # Signal workers to reload mappings
-                cursor.execute(
-                    """
-                    INSERT INTO worker_signals (signal_type, target_worker, created_at)
-                    VALUES ('mappings_reload', 'triage', NOW())
-                    """
-                )
+                # Trigger side-effects for mapping change
+                rows_enqueued = _trigger_mapping_change_side_effects(cursor, email)
 
             conn.commit()
 
@@ -274,16 +272,8 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
                 if not updated:
                     return jsonify({"error": "Mapping not found"}), 404
 
-                # Trigger re-enqueue (label changed, treat as remove + add)
-                rows_enqueued = _enqueue_sender_for_reprocess(cursor, email, priority=-200)
-
-                # Signal workers to reload mappings
-                cursor.execute(
-                    """
-                    INSERT INTO worker_signals (signal_type, target_worker, created_at)
-                    VALUES ('mappings_reload', 'triage', NOW())
-                    """
-                )
+                # Trigger side-effects for mapping change
+                rows_enqueued = _trigger_mapping_change_side_effects(cursor, email)
 
             conn.commit()
 
@@ -344,16 +334,8 @@ def delete_mapping(mapping_id: int) -> Response | tuple[Response, int]:
 
                 email = row["email_address"]
 
-                # Trigger re-enqueue (mapping removed, emails need re-evaluation)
-                rows_enqueued = _enqueue_sender_for_reprocess(cursor, email, priority=-200)
-
-                # Signal workers to reload mappings
-                cursor.execute(
-                    """
-                    INSERT INTO worker_signals (signal_type, target_worker, created_at)
-                    VALUES ('mappings_reload', 'triage', NOW())
-                    """
-                )
+                # Trigger side-effects for mapping change
+                rows_enqueued = _trigger_mapping_change_side_effects(cursor, email)
 
             conn.commit()
 
@@ -442,6 +424,27 @@ def get_mapping_history(email_address: str) -> Response | tuple[Response, int]:
             "total": total,
         }
     )
+
+
+def _trigger_mapping_change_side_effects(cursor: Any, email_address: str) -> int:
+    """Enqueue emails for reprocessing and signal workers to reload mappings.
+
+    Args:
+        cursor: Database cursor
+        email_address: Email address to trigger side-effects for
+
+    Returns:
+        Number of rows enqueued
+    """
+    rows_enqueued = _enqueue_sender_for_reprocess(cursor, email_address, priority=-200)
+    cursor.execute(
+        """
+        INSERT INTO worker_signals (signal_type, target_worker, created_at)
+        VALUES ('mappings_reload', 'triage', NOW())
+        ON CONFLICT DO NOTHING
+        """
+    )
+    return rows_enqueued
 
 
 def _enqueue_sender_for_reprocess(cursor: Any, email_address: str, priority: int = -200) -> int:
