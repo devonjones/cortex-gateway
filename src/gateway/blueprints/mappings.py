@@ -168,7 +168,7 @@ def add_mapping() -> Response | tuple[Response, int]:
             "Mapping created",
             mapping_id=mapping_id,
             email=email,
-            type=mapping_type,
+            mapping_type=mapping_type,
             label=label,
             rows_enqueued=rows_enqueued,
             created_by=created_by,
