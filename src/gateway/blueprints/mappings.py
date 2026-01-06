@@ -203,6 +203,7 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
 
     Request body (all fields optional, only provide fields to change):
         {
+            "type": "priority" | "fallback",  # Move between types
             "label": "New/Label",
             "archive": true | false | null,
             "mark_read": true | false | null
@@ -215,6 +216,7 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
         200: Mapping updated, re-enqueue triggered
         404: Mapping not found
         400: Invalid input
+        409: Conflict (email already exists in target type)
         500: Internal error
     """
     data = request.get_json()
@@ -228,6 +230,16 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
     # Build UPDATE query dynamically
     updates = []
     params: list[str | int | bool | None] = []
+
+    if "type" in data:
+        mapping_type = data["type"]
+        if not isinstance(mapping_type, str) or mapping_type.strip() not in (
+            "priority",
+            "fallback",
+        ):
+            return jsonify({"error": "type must be 'priority' or 'fallback'"}), 400
+        updates.append("mapping_type = %s")
+        params.append(mapping_type.strip())
 
     if "label" in data:
         label = data["label"]
@@ -299,6 +311,9 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
         )
 
     except Exception as e:
+        # Check for unique constraint violation (changing type to one that already exists)
+        if hasattr(e, "pgcode") and e.pgcode == "23505":
+            return jsonify({"error": "Mapping with this email and type already exists"}), 409
         logger.error("Failed to update mapping", error=str(e), exc_info=True)
         return jsonify({"error": "Failed to update mapping"}), 500
 
@@ -484,9 +499,12 @@ def _enqueue_sender_for_reprocess(
         FROM emails_raw er
         JOIN emails_parsed ep ON ep.gmail_id = er.gmail_id
         WHERE LOWER(ep.from_addr) = LOWER(%s)
-        ON CONFLICT (queue_name, (payload->>'gmail_id'), status)
-        WHERE status IN ('pending', 'processing')
-        DO NOTHING
+        AND NOT EXISTS (
+            SELECT 1 FROM queue q
+            WHERE q.queue_name = 'triage'
+              AND q.payload->>'gmail_id' = er.gmail_id
+              AND q.status IN ('pending', 'processing')
+        )
         """,
         (priority, email_address),
     )
