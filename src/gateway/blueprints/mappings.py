@@ -8,6 +8,7 @@ from typing import Any
 
 import structlog
 from flask import Blueprint, Response, jsonify, request
+from psycopg2.extras import RealDictCursor
 
 from gateway.services.postgres import ConnectionContext, execute_query
 
@@ -143,7 +144,7 @@ def add_mapping() -> Response | tuple[Response, int]:
 
     try:
         with ConnectionContext() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 # Insert mapping, handling conflicts atomically
                 cursor.execute(
                     """
@@ -273,7 +274,7 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
 
     try:
         with ConnectionContext() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 # Update mapping and get data for side-effects
                 query = f"""
                     UPDATE triage_email_mappings
@@ -336,7 +337,7 @@ def delete_mapping(mapping_id: int) -> Response | tuple[Response, int]:
 
     try:
         with ConnectionContext() as conn:
-            with conn.cursor() as cursor:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 # Soft delete
                 cursor.execute(
                     """
