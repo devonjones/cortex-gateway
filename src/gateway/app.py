@@ -26,6 +26,14 @@ def create_app() -> Flask:
     """Create and configure the Flask application."""
     app = Flask("cortex-gateway")
 
+    # Configure secret key for session management (OAuth CSRF protection)
+    app.secret_key = config.oauth_secret_key or "dev-secret-key-not-for-production"
+    if not config.oauth_secret_key:
+        logger.warning(
+            "oauth_secret_key_not_set",
+            message="Using default secret key. Set OAUTH_SECRET_KEY for production.",
+        )
+
     # Apply metrics middleware
     app.wsgi_app = MetricsMiddleware(app.wsgi_app, "cortex-gateway")  # type: ignore[method-assign]
 

@@ -8,29 +8,36 @@ import json
 from pathlib import Path
 
 import structlog
-from flask import Blueprint, redirect, request
+from flask import Blueprint, redirect, request, session
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+
+from gateway.config import config
 
 logger = structlog.get_logger(__name__)
 
 oauth_bp = Blueprint("oauth", __name__, url_prefix="/oauth")
 
 # OAuth configuration
-TOKEN_PATH = Path("/home/devon/cortex-secrets/gmail-token.json")
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://mail.google.com/",
 ]
 
 
+def _get_token_path() -> Path:
+    """Get token path from configuration."""
+    return Path(config.oauth_token_path)
+
+
 def _load_client_config() -> dict[str, dict[str, str | list[str]]]:
     """Load OAuth client configuration from existing token file."""
-    if not TOKEN_PATH.exists():
-        raise FileNotFoundError(f"Token file not found: {TOKEN_PATH}")
+    token_path = _get_token_path()
+    if not token_path.exists():
+        raise FileNotFoundError(f"Token file not found: {token_path}")
 
-    with open(TOKEN_PATH) as f:
+    with open(token_path) as f:
         data = json.load(f)
 
     return {
@@ -46,8 +53,9 @@ def _load_client_config() -> dict[str, dict[str, str | list[str]]]:
 
 def _save_token(creds: Credentials) -> None:
     """Save refreshed credentials to token file."""
+    token_path = _get_token_path()
     # Load existing data to preserve client credentials
-    with open(TOKEN_PATH) as f:
+    with open(token_path) as f:
         data = json.load(f)
 
     # Update with new token
@@ -56,23 +64,24 @@ def _save_token(creds: Credentials) -> None:
     if creds.expiry:
         data["expiry"] = creds.expiry.isoformat()
 
-    with open(TOKEN_PATH, "w") as f:
+    with open(token_path, "w") as f:
         json.dump(data, f, indent=2)
 
-    logger.info("Token saved", path=str(TOKEN_PATH))
+    logger.info("Token saved", path=str(token_path))
 
 
 @oauth_bp.route("/status")
 def status():
     """Show current token status."""
     try:
-        if not TOKEN_PATH.exists():
+        token_path = _get_token_path()
+        if not token_path.exists():
             return {
                 "status": "no_token",
-                "message": f"Token file not found: {TOKEN_PATH}",
+                "message": f"Token file not found: {token_path}",
             }, 404
 
-        with open(TOKEN_PATH) as f:
+        with open(token_path) as f:
             data = json.load(f)
 
         has_refresh = bool(data.get("refresh_token"))
@@ -80,7 +89,7 @@ def status():
 
         return {
             "status": "ok",
-            "token_path": str(TOKEN_PATH),
+            "token_path": str(token_path),
             "has_refresh_token": has_refresh,
             "expiry": expiry,
             "scopes": data.get("scopes", []),
@@ -89,22 +98,26 @@ def status():
                 "new": "/oauth/start",
             },
         }
-    except Exception as e:
-        logger.error("Failed to read token status", error=str(e))
-        return {"status": "error", "error": str(e)}, 500
+    except Exception:
+        logger.exception("Failed to read token status")
+        return {
+            "status": "error",
+            "error": "Failed to read token status. See logs for details.",
+        }, 500
 
 
 @oauth_bp.route("/refresh", methods=["POST"])
 def refresh():
     """Attempt to refresh the existing token (non-interactive)."""
     try:
-        if not TOKEN_PATH.exists():
+        token_path = _get_token_path()
+        if not token_path.exists():
             return {
                 "status": "error",
                 "message": "No token file found. Use /oauth/start to create one.",
             }, 404
 
-        with open(TOKEN_PATH) as f:
+        with open(token_path) as f:
             data = json.load(f)
 
         if not data.get("refresh_token"):
@@ -133,19 +146,27 @@ def refresh():
             "expiry": creds.expiry.isoformat() if creds.expiry else None,
         }
 
-    except Exception as e:
-        logger.error("Token refresh failed", error=str(e))
+    except Exception:
+        logger.exception("Token refresh failed")
         return {
             "status": "error",
-            "error": str(e),
+            "error": "An internal error occurred while refreshing the token. See logs for details.",
             "suggestion": "Try /oauth/start for new token",
-        }, 400
+        }, 500
 
 
 @oauth_bp.route("/start")
 def start():
     """Start OAuth flow - redirects to Google consent screen."""
     try:
+        # Ensure secret key is configured for session
+        if not config.oauth_secret_key:
+            logger.error("OAuth secret key not configured")
+            return {
+                "status": "error",
+                "error": "OAuth not properly configured. Contact administrator.",
+            }, 500
+
         client_config = _load_client_config()
 
         # Create flow with dynamic redirect URI
@@ -162,17 +183,16 @@ def start():
         )
 
         # Store state in session for CSRF protection
-        # In production, use Flask session with secret key
-        # For now, we'll validate the callback URL matches our host
-        logger.info("Starting OAuth flow", redirect_uri=flow.redirect_uri)
+        session["oauth_state"] = state
+        logger.info("Starting OAuth flow", redirect_uri=flow.redirect_uri, state=state)
 
         return redirect(authorization_url)
 
-    except Exception as e:
-        logger.error("Failed to start OAuth flow", error=str(e))
+    except Exception:
+        logger.exception("Failed to start OAuth flow")
         return {
             "status": "error",
-            "error": str(e),
+            "error": "Failed to start OAuth flow. See logs for details.",
         }, 500
 
 
@@ -180,12 +200,40 @@ def start():
 def callback():
     """Handle OAuth callback from Google."""
     try:
+        # Validate state parameter for CSRF protection
+        callback_state = request.args.get("state")
+        stored_state = session.get("oauth_state")
+
+        if not callback_state or not stored_state or callback_state != stored_state:
+            logger.error(
+                "OAuth state mismatch",
+                callback_state=callback_state,
+                stored_state=stored_state,
+            )
+            return (
+                """
+        <html>
+        <head><title>OAuth Error</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h1 style="color: red;">❌ Authorization Failed</h1>
+            <p>Invalid state parameter. This may be a CSRF attack.</p>
+            <p><a href="/oauth/start">Try again</a></p>
+        </body>
+        </html>
+        """,
+                400,
+            )
+
+        # Clear state from session
+        session.pop("oauth_state", None)
+
         client_config = _load_client_config()
 
         flow = Flow.from_client_config(
             client_config,
             scopes=SCOPES,
             redirect_uri=f"http://{request.host}/oauth/callback",
+            state=stored_state,
         )
 
         # Exchange authorization code for token
@@ -196,15 +244,14 @@ def callback():
 
         logger.info("OAuth flow completed successfully")
 
+        expiry_str = creds.expiry.isoformat() if creds.expiry else "Unknown"
         return f"""
         <html>
         <head><title>OAuth Success</title></head>
         <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
             <h1 style="color: green;">✅ Authorization Successful!</h1>
             <p>Gmail token has been refreshed and saved.</p>
-            <p><strong>Token expires:</strong> {
-                creds.expiry.isoformat() if creds.expiry else 'Unknown'
-            }</p>
+            <p><strong>Token expires:</strong> {expiry_str}</p>
             <p>You can close this window and restart the gmail-sync service.</p>
             <hr>
             <p><a href="/oauth/status">Check token status</a></p>
@@ -212,15 +259,15 @@ def callback():
         </html>
         """
 
-    except Exception as e:
-        logger.error("OAuth callback failed", error=str(e))
+    except Exception:
+        logger.exception("OAuth callback failed")
         return (
-            f"""
+            """
         <html>
         <head><title>OAuth Error</title></head>
         <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
             <h1 style="color: red;">❌ Authorization Failed</h1>
-            <p><strong>Error:</strong> {str(e)}</p>
+            <p>An unexpected error occurred. Please check the server logs for details.</p>
             <p><a href="/oauth/start">Try again</a></p>
         </body>
         </html>
