@@ -241,6 +241,15 @@ def start():
 
         return redirect(authorization_url)
 
+    except FileNotFoundError as e:
+        logger.error("OAuth token file not found", error=str(e))
+        return {
+            "status": "error",
+            "error": (
+                "OAuth token file not found. "
+                "A token file with client_id and client_secret must exist to start the flow."
+            ),
+        }, 500
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to load OAuth configuration", error=str(e))
         return {
@@ -303,6 +312,16 @@ def callback():
             expiry=expiry_str,
         )
 
+    except FileNotFoundError as e:
+        logger.error("OAuth token file not found during callback", error=str(e))
+        return _render_oauth_page(
+            title="OAuth Error",
+            heading="Authorization Failed",
+            message=(
+                "OAuth token file not found. "
+                "A token file with client_id and client_secret must exist."
+            ),
+        )
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to load OAuth configuration during callback", error=str(e))
         return _render_oauth_page(
