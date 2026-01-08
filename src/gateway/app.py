@@ -34,6 +34,12 @@ def create_app() -> Flask:
             message="OAUTH_SECRET_KEY must be set for production deployments.",
         )
         raise ValueError("OAUTH_SECRET_KEY must be set for production deployments.")
+    if not config.oauth_token_path:
+        logger.critical(
+            "oauth_token_path_not_set",
+            message="OAUTH_TOKEN_PATH must be set for production deployments.",
+        )
+        raise ValueError("OAUTH_TOKEN_PATH must be set for production deployments.")
 
     # Apply metrics middleware
     app.wsgi_app = MetricsMiddleware(app.wsgi_app, "cortex-gateway")  # type: ignore[method-assign]
