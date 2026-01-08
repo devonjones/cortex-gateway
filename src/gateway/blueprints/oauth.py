@@ -22,6 +22,7 @@ oauth_bp = Blueprint("oauth", __name__, url_prefix="/oauth")
 
 # OAuth configuration
 SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://mail.google.com/",
 ]
