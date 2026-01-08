@@ -66,6 +66,10 @@ ignore_missing_imports = true
 module = "gateway.blueprints.*"
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+module = "google.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
