@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 import structlog
-from flask import Blueprint, redirect, request, session
+from flask import Blueprint, redirect, render_template_string, request, session, url_for
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -52,7 +52,7 @@ def _load_client_config() -> dict[str, dict[str, str | list[str]]]:
 
 
 def _save_token(creds: Credentials) -> None:
-    """Save refreshed credentials to token file."""
+    """Save refreshed credentials to token file atomically."""
     token_path = _get_token_path()
     # Load existing data to preserve client credentials
     with open(token_path) as f:
@@ -64,8 +64,11 @@ def _save_token(creds: Credentials) -> None:
     if creds.expiry:
         data["expiry"] = creds.expiry.isoformat()
 
-    with open(token_path, "w") as f:
+    # Write atomically via temp file + rename
+    temp_path = token_path.with_suffix(f"{token_path.suffix}.tmp")
+    with open(temp_path, "w") as f:
         json.dump(data, f, indent=2)
+    temp_path.rename(token_path)
 
     logger.info("Token saved", path=str(token_path))
 
@@ -98,6 +101,12 @@ def status():
                 "new": "/oauth/start",
             },
         }
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning("Failed to parse token file", path=str(token_path), error=str(e))
+        return {"status": "error", "error": "Token file is corrupted or invalid."}, 500
+    except FileNotFoundError:
+        # Already handled above, but included for completeness
+        return {"status": "no_token", "message": "Token file not found."}, 404
     except Exception:
         logger.exception("Failed to read token status")
         return {
@@ -146,6 +155,13 @@ def refresh():
             "expiry": creds.expiry.isoformat() if creds.expiry else None,
         }
 
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning("Failed to parse token file", path=str(token_path), error=str(e))
+        return {
+            "status": "error",
+            "error": "Token file is corrupted or invalid.",
+            "suggestion": "Try /oauth/start for new token",
+        }, 500
     except Exception:
         logger.exception("Token refresh failed")
         return {
@@ -169,11 +185,11 @@ def start():
 
         client_config = _load_client_config()
 
-        # Create flow with dynamic redirect URI
+        # Create flow with redirect URI from url_for (respects proxy headers)
         flow = Flow.from_client_config(
             client_config,
             scopes=SCOPES,
-            redirect_uri=f"http://{request.host}/oauth/callback",
+            redirect_uri=url_for("oauth.callback", _external=True),
         )
 
         authorization_url, state = flow.authorization_url(
@@ -188,6 +204,12 @@ def start():
 
         return redirect(authorization_url)
 
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning("Failed to load OAuth configuration", error=str(e))
+        return {
+            "status": "error",
+            "error": "OAuth configuration is invalid or corrupted.",
+        }, 500
     except Exception:
         logger.exception("Failed to start OAuth flow")
         return {
@@ -211,16 +233,19 @@ def callback():
                 stored_state=stored_state,
             )
             return (
-                """
+                render_template_string(
+                    """
         <html>
         <head><title>OAuth Error</title></head>
         <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
             <h1 style="color: red;">❌ Authorization Failed</h1>
-            <p>Invalid state parameter. This may be a CSRF attack.</p>
+            <p>{{ error_message }}</p>
             <p><a href="/oauth/start">Try again</a></p>
         </body>
         </html>
         """,
+                    error_message="Invalid state parameter. This may be a CSRF attack.",
+                ),
                 400,
             )
 
@@ -232,7 +257,7 @@ def callback():
         flow = Flow.from_client_config(
             client_config,
             scopes=SCOPES,
-            redirect_uri=f"http://{request.host}/oauth/callback",
+            redirect_uri=url_for("oauth.callback", _external=True),
             state=stored_state,
         )
 
@@ -245,32 +270,58 @@ def callback():
         logger.info("OAuth flow completed successfully")
 
         expiry_str = creds.expiry.isoformat() if creds.expiry else "Unknown"
-        return f"""
+        return render_template_string(
+            """
         <html>
         <head><title>OAuth Success</title></head>
         <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
             <h1 style="color: green;">✅ Authorization Successful!</h1>
             <p>Gmail token has been refreshed and saved.</p>
-            <p><strong>Token expires:</strong> {expiry_str}</p>
+            <p><strong>Token expires:</strong> {{ expiry }}</p>
             <p>You can close this window and restart the gmail-sync service.</p>
             <hr>
             <p><a href="/oauth/status">Check token status</a></p>
         </body>
         </html>
-        """
+        """,
+            expiry=expiry_str,
+        )
 
-    except Exception:
-        logger.exception("OAuth callback failed")
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.warning("Failed to load OAuth configuration during callback", error=str(e))
         return (
-            """
+            render_template_string(
+                """
         <html>
         <head><title>OAuth Error</title></head>
         <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
             <h1 style="color: red;">❌ Authorization Failed</h1>
-            <p>An unexpected error occurred. Please check the server logs for details.</p>
+            <p>{{ error_message }}</p>
             <p><a href="/oauth/start">Try again</a></p>
         </body>
         </html>
         """,
+                error_message="OAuth configuration is invalid or corrupted.",
+            ),
+            500,
+        )
+    except Exception:
+        logger.exception("OAuth callback failed")
+        return (
+            render_template_string(
+                """
+        <html>
+        <head><title>OAuth Error</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h1 style="color: red;">❌ Authorization Failed</h1>
+            <p>{{ error_message }}</p>
+            <p><a href="/oauth/start">Try again</a></p>
+        </body>
+        </html>
+        """,
+                error_message=(
+                    "An unexpected error occurred. Please check the server logs for details."
+                ),
+            ),
             500,
         )

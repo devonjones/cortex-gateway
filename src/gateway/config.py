@@ -32,9 +32,7 @@ class Config:
     metrics_port: int = _get_int_env("METRICS_PORT", "8001")
 
     # OAuth
-    oauth_token_path: str = os.environ.get(
-        "OAUTH_TOKEN_PATH", "/home/devon/cortex-secrets/gmail-token.json"
-    )
+    oauth_token_path: str = os.environ.get("OAUTH_TOKEN_PATH", "gmail-token.json")
     oauth_secret_key: str = os.environ.get("OAUTH_SECRET_KEY", "")
 
     @property
