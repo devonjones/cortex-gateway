@@ -46,9 +46,49 @@ def _load_client_config() -> dict[str, dict[str, str | list[str]]]:
             "client_secret": data["client_secret"],
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [f"http://{request.host}/oauth/callback"],
         }
     }
+
+
+def _render_oauth_page(
+    *, title: str, heading: str, message: str, expiry: str | None = None
+) -> tuple[str, int]:
+    """Render HTML page for OAuth flow results."""
+    is_success = title == "OAuth Success"
+    color = "green" if is_success else "red"
+    emoji = "✅" if is_success else "❌"
+    status_code = 200 if is_success else (400 if "state" in message.lower() else 500)
+
+    # Build additional content based on success/error
+    extra_content = ""
+    if is_success and expiry:
+        extra_content = f"<p><strong>Token expires:</strong> {expiry}</p>"
+        extra_content += "<p>You can close this window and restart the gmail-sync service.</p>"
+        extra_content += '<hr><p><a href="/oauth/status">Check token status</a></p>'
+    else:
+        extra_content = '<p><a href="/oauth/start">Try again</a></p>'
+
+    return (
+        render_template_string(
+            """
+        <html>
+        <head><title>{{ title }}</title></head>
+        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+            <h1 style="color: {{ color }};">{{ emoji }} {{ heading }}</h1>
+            <p>{{ message }}</p>
+            {{ extra_content | safe }}
+        </body>
+        </html>
+        """,
+            title=title,
+            color=color,
+            emoji=emoji,
+            heading=heading,
+            message=message,
+            extra_content=extra_content,
+        ),
+        status_code,
+    )
 
 
 def _save_token(creds: Credentials) -> None:
@@ -104,9 +144,6 @@ def status():
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to parse token file", path=str(token_path), error=str(e))
         return {"status": "error", "error": "Token file is corrupted or invalid."}, 500
-    except FileNotFoundError:
-        # Already handled above, but included for completeness
-        return {"status": "no_token", "message": "Token file not found."}, 404
     except Exception:
         logger.exception("Failed to read token status")
         return {
@@ -232,21 +269,10 @@ def callback():
                 callback_state=callback_state,
                 stored_state=stored_state,
             )
-            return (
-                render_template_string(
-                    """
-        <html>
-        <head><title>OAuth Error</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-            <h1 style="color: red;">❌ Authorization Failed</h1>
-            <p>{{ error_message }}</p>
-            <p><a href="/oauth/start">Try again</a></p>
-        </body>
-        </html>
-        """,
-                    error_message="Invalid state parameter. This may be a CSRF attack.",
-                ),
-                400,
+            return _render_oauth_page(
+                title="OAuth Error",
+                heading="Authorization Failed",
+                message="Invalid state parameter. This may be a CSRF attack.",
             )
 
         # Clear state from session
@@ -270,58 +296,24 @@ def callback():
         logger.info("OAuth flow completed successfully")
 
         expiry_str = creds.expiry.isoformat() if creds.expiry else "Unknown"
-        return render_template_string(
-            """
-        <html>
-        <head><title>OAuth Success</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-            <h1 style="color: green;">✅ Authorization Successful!</h1>
-            <p>Gmail token has been refreshed and saved.</p>
-            <p><strong>Token expires:</strong> {{ expiry }}</p>
-            <p>You can close this window and restart the gmail-sync service.</p>
-            <hr>
-            <p><a href="/oauth/status">Check token status</a></p>
-        </body>
-        </html>
-        """,
+        return _render_oauth_page(
+            title="OAuth Success",
+            heading="Authorization Successful!",
+            message="Gmail token has been refreshed and saved.",
             expiry=expiry_str,
         )
 
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to load OAuth configuration during callback", error=str(e))
-        return (
-            render_template_string(
-                """
-        <html>
-        <head><title>OAuth Error</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-            <h1 style="color: red;">❌ Authorization Failed</h1>
-            <p>{{ error_message }}</p>
-            <p><a href="/oauth/start">Try again</a></p>
-        </body>
-        </html>
-        """,
-                error_message="OAuth configuration is invalid or corrupted.",
-            ),
-            500,
+        return _render_oauth_page(
+            title="OAuth Error",
+            heading="Authorization Failed",
+            message="OAuth configuration is invalid or corrupted.",
         )
     except Exception:
         logger.exception("OAuth callback failed")
-        return (
-            render_template_string(
-                """
-        <html>
-        <head><title>OAuth Error</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
-            <h1 style="color: red;">❌ Authorization Failed</h1>
-            <p>{{ error_message }}</p>
-            <p><a href="/oauth/start">Try again</a></p>
-        </body>
-        </html>
-        """,
-                error_message=(
-                    "An unexpected error occurred. Please check the server logs for details."
-                ),
-            ),
-            500,
+        return _render_oauth_page(
+            title="OAuth Error",
+            heading="Authorization Failed",
+            message="An unexpected error occurred. Please check the server logs for details.",
         )
