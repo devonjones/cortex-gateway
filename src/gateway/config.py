@@ -31,6 +31,10 @@ class Config:
     port: int = _get_int_env("PORT", "8080")
     metrics_port: int = _get_int_env("METRICS_PORT", "8001")
 
+    # OAuth
+    oauth_token_path: str = os.environ.get("OAUTH_TOKEN_PATH", "")
+    oauth_secret_key: str = os.environ.get("OAUTH_SECRET_KEY", "")
+
     @property
     def postgres_dsn(self) -> str:
         """Build Postgres connection string."""

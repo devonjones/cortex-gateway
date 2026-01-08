@@ -11,6 +11,7 @@ from gateway.blueprints import (
     config_bp,
     emails_bp,
     mappings_bp,
+    oauth_bp,
     queue_bp,
     sync_bp,
     triage_bp,
@@ -25,6 +26,21 @@ def create_app() -> Flask:
     """Create and configure the Flask application."""
     app = Flask("cortex-gateway")
 
+    # Configure secret key for session management (OAuth CSRF protection)
+    app.secret_key = config.oauth_secret_key
+    if not app.secret_key:
+        logger.critical(
+            "oauth_secret_key_not_set",
+            message="OAUTH_SECRET_KEY must be set for production deployments.",
+        )
+        raise ValueError("OAUTH_SECRET_KEY must be set for production deployments.")
+    if not config.oauth_token_path:
+        logger.critical(
+            "oauth_token_path_not_set",
+            message="OAUTH_TOKEN_PATH must be set for production deployments.",
+        )
+        raise ValueError("OAUTH_TOKEN_PATH must be set for production deployments.")
+
     # Apply metrics middleware
     app.wsgi_app = MetricsMiddleware(app.wsgi_app, "cortex-gateway")  # type: ignore[method-assign]
 
@@ -37,6 +53,7 @@ def create_app() -> Flask:
     app.register_blueprint(sync_bp, url_prefix="/sync")
     app.register_blueprint(config_bp, url_prefix="/config")
     app.register_blueprint(mappings_bp, url_prefix="/mappings")
+    app.register_blueprint(oauth_bp)
 
     # Register health checks
     register_health_check(app, check_postgres)
