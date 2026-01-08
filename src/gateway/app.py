@@ -11,6 +11,7 @@ from gateway.blueprints import (
     config_bp,
     emails_bp,
     mappings_bp,
+    oauth_bp,
     queue_bp,
     sync_bp,
     triage_bp,
@@ -37,6 +38,7 @@ def create_app() -> Flask:
     app.register_blueprint(sync_bp, url_prefix="/sync")
     app.register_blueprint(config_bp, url_prefix="/config")
     app.register_blueprint(mappings_bp, url_prefix="/mappings")
+    app.register_blueprint(oauth_bp)
 
     # Register health checks
     register_health_check(app, check_postgres)
