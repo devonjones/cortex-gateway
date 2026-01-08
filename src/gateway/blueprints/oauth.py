@@ -9,6 +9,7 @@ from pathlib import Path
 
 import structlog
 from flask import Blueprint, redirect, render_template_string, request, session, url_for
+from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -51,13 +52,12 @@ def _load_client_config() -> dict[str, dict[str, str | list[str]]]:
 
 
 def _render_oauth_page(
-    *, title: str, heading: str, message: str, expiry: str | None = None
+    *, title: str, heading: str, message: str, status_code: int, expiry: str | None = None
 ) -> tuple[str, int]:
     """Render HTML page for OAuth flow results."""
-    is_success = title == "OAuth Success"
+    is_success = 200 <= status_code < 300
     color = "green" if is_success else "red"
     emoji = "✅" if is_success else "❌"
-    status_code = 200 if is_success else (400 if "state" in message.lower() else 500)
 
     # Build additional content based on success/error
     extra_content = ""
@@ -182,7 +182,16 @@ def refresh():
             scopes=data.get("scopes", SCOPES),
         )
 
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except google_auth_exceptions.RefreshError as e:
+            logger.warning("Token refresh failed", error=str(e))
+            return {
+                "status": "error",
+                "error": "Token refresh failed. The refresh token may be invalid or revoked.",
+                "suggestion": "Try /oauth/start for a new token.",
+            }, 400
+
         _save_token(creds)
 
         logger.info("Token refreshed successfully")
@@ -282,6 +291,7 @@ def callback():
                 title="OAuth Error",
                 heading="Authorization Failed",
                 message="Invalid state parameter. This may be a CSRF attack.",
+                status_code=400,
             )
 
         # Clear state from session
@@ -309,6 +319,7 @@ def callback():
             title="OAuth Success",
             heading="Authorization Successful!",
             message="Gmail token has been refreshed and saved.",
+            status_code=200,
             expiry=expiry_str,
         )
 
@@ -321,6 +332,7 @@ def callback():
                 "OAuth token file not found. "
                 "A token file with client_id and client_secret must exist."
             ),
+            status_code=500,
         )
     except (json.JSONDecodeError, KeyError) as e:
         logger.warning("Failed to load OAuth configuration during callback", error=str(e))
@@ -328,6 +340,7 @@ def callback():
             title="OAuth Error",
             heading="Authorization Failed",
             message="OAuth configuration is invalid or corrupted.",
+            status_code=500,
         )
     except Exception:
         logger.exception("OAuth callback failed")
@@ -335,4 +348,5 @@ def callback():
             title="OAuth Error",
             heading="Authorization Failed",
             message="An unexpected error occurred. Please check the server logs for details.",
+            status_code=500,
         )
