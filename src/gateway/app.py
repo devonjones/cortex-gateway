@@ -25,7 +25,7 @@ logger = get_logger()
 def create_app() -> Flask:
     """Create and configure the Flask application."""
     # Configure logging
-    log_level = config.log_level if hasattr(config, "log_level") else "INFO"
+    log_level = getattr(config, "log_level", "INFO")
     configure_logging(service_name="cortex-gateway", level=log_level)
 
     app = Flask("cortex-gateway")

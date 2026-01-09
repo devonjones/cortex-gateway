@@ -35,6 +35,9 @@ class Config:
     oauth_token_path: str = os.environ.get("OAUTH_TOKEN_PATH", "")
     oauth_secret_key: str = os.environ.get("OAUTH_SECRET_KEY", "")
 
+    # Logging
+    log_level: str = os.environ.get("LOG_LEVEL", "INFO")
+
     @property
     def postgres_dsn(self) -> str:
         """Build Postgres connection string."""
