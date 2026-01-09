@@ -62,9 +62,7 @@ def _render_oauth_page(
 
     # Build additional content based on success/error
     extra_content = ""
-    if is_success and expiry:
-        extra_content = f"<p><strong>Token expires:</strong> {expiry}</p>"
-        extra_content += "<p>You can close this window and restart the gmail-sync service.</p>"
+    if is_success:
         extra_content += '<hr><p><a href="/oauth/status">Check token status</a></p>'
     else:
         extra_content = '<p><a href="/oauth/start">Try again</a></p>'
@@ -102,8 +100,8 @@ def _save_token(creds: Credentials) -> None:
     # Update with new token
     data["token"] = creds.token
     data["refresh_token"] = creds.refresh_token
-    if creds.expiry:
-        data["expiry"] = creds.expiry.isoformat()
+    # Note: We don't save expiry because google.auth.credentials expects
+    # to manage expiry internally when loading from JSON
 
     # Write atomically via temp file + rename
     temp_path = token_path.with_suffix(f"{token_path.suffix}.tmp")
@@ -315,13 +313,14 @@ def callback():
 
         logger.info("OAuth flow completed successfully")
 
-        expiry_str = creds.expiry.isoformat() if creds.expiry else "Unknown"
         return _render_oauth_page(
             title="OAuth Success",
             heading="Authorization Successful!",
-            message="Gmail token has been refreshed and saved.",
+            message=(
+                "Gmail token has been refreshed and saved. "
+                "You can close this window and restart the gmail-sync service."
+            ),
             status_code=200,
-            expiry=expiry_str,
         )
 
     except FileNotFoundError as e:
