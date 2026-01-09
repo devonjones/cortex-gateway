@@ -97,7 +97,7 @@ def retry_failed(job_id: int) -> Response | tuple[Response, int]:
     # Reset to pending
     update_query = """
         UPDATE queue
-        SET status = 'pending', error = NULL, attempts = 0, updated_at = NOW()
+        SET status = 'pending', last_error = NULL, attempts = 0, updated_at = NOW()
         WHERE id = %s
     """
     postgres.execute_update(update_query, (job_id,))
@@ -151,7 +151,7 @@ def retry_all_failed():
 
     update_query = """
         UPDATE queue
-        SET status = 'pending', error = NULL, attempts = 0, updated_at = NOW()
+        SET status = 'pending', last_error = NULL, attempts = 0, updated_at = NOW()
         WHERE status = 'failed' AND queue_name = %s
     """
     count = postgres.execute_update(update_query, (queue_name,))
