@@ -1,8 +1,8 @@
 """Flask application factory for Cortex Gateway."""
 
 import httpx
-import structlog
 from cortex_utils.api import MetricsMiddleware, health_bp, register_health_check
+from cortex_utils.logging import configure_logging, get_logger
 from cortex_utils.metrics import start_metrics_server
 from flask import Flask
 
@@ -19,11 +19,15 @@ from gateway.blueprints import (
 from gateway.config import config
 from gateway.services.postgres import get_connection, init_pool
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 
 def create_app() -> Flask:
     """Create and configure the Flask application."""
+    # Configure logging
+    log_level = config.log_level
+    configure_logging(service_name="cortex-gateway", level=log_level)
+
     app = Flask("cortex-gateway")
 
     # Configure secret key for session management (OAuth CSRF protection)
