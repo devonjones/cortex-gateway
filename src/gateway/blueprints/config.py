@@ -2,7 +2,7 @@
 
 import difflib
 
-import structlog
+from cortex_utils.logging import get_logger
 from cortex_utils.triage_config import (
     export_config_to_yaml,
     import_yaml_to_db,
@@ -14,7 +14,7 @@ from yaml import YAMLError
 
 from gateway.services.postgres import ConnectionContext, execute_query
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 config_bp = Blueprint("config", __name__)
 

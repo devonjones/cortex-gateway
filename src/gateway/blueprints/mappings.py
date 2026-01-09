@@ -6,13 +6,13 @@ Changes to mappings automatically trigger targeted re-enqueue by sender.
 
 from typing import Any
 
-import structlog
+from cortex_utils.logging import get_logger
 from flask import Blueprint, Response, jsonify, request
 from psycopg2.extras import RealDictCursor
 
 from gateway.services.postgres import ConnectionContext, execute_query
 
-logger = structlog.get_logger()
+logger = get_logger()
 
 mappings_bp = Blueprint("mappings", __name__)
 

@@ -7,7 +7,7 @@ SSH tunneling or headless OAuth flows.
 import json
 from pathlib import Path
 
-import structlog
+from cortex_utils.logging import get_logger
 from flask import Blueprint, redirect, render_template_string, request, session, url_for
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request
@@ -16,7 +16,7 @@ from google_auth_oauthlib.flow import Flow
 
 from gateway.config import config
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 oauth_bp = Blueprint("oauth", __name__, url_prefix="/oauth")
 
