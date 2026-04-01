@@ -327,7 +327,7 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
                     500,
                 )
 
-            # Mark as rollback in database
+            # Mark as rollback in database and send reload signal
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
@@ -336,6 +336,12 @@ def rollback_to_version(version: int) -> Response | tuple[Response, int]:
                     WHERE version = %s
                     """,
                     (version, new_version),
+                )
+                cursor.execute(
+                    "INSERT INTO worker_signals"
+                    " (signal_type, target_worker, payload)"
+                    " VALUES ('config_reload', 'all', %s)",
+                    (Json({"version": new_version}),),
                 )
             conn.commit()
 
