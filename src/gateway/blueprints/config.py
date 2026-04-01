@@ -166,7 +166,9 @@ def update_config() -> Response | tuple[Response, int]:
             version = import_yaml_to_db(conn, yaml_content, created_by, notes)
             with conn.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO worker_signals (signal_type, target_worker, payload) VALUES ('config_reload', 'all', %s)",
+                    "INSERT INTO worker_signals"
+                    " (signal_type, target_worker, payload)"
+                    " VALUES ('config_reload', 'all', %s)",
                     (Json({"version": version}),),
                 )
             conn.commit()
