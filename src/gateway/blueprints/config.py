@@ -10,6 +10,7 @@ from cortex_utils.triage_config import (
     validate_rules,
 )
 from flask import Blueprint, Response, jsonify, request
+from psycopg2.extras import Json
 from yaml import YAMLError
 
 from gateway.services.postgres import ConnectionContext, execute_query
@@ -163,6 +164,11 @@ def update_config() -> Response | tuple[Response, int]:
         # If validation passes, import to database
         with ConnectionContext() as conn:
             version = import_yaml_to_db(conn, yaml_content, created_by, notes)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO worker_signals (signal_type, target_worker, payload) VALUES ('config_reload', 'all', %s)",
+                    (Json({"version": version}),),
+                )
             conn.commit()
 
         return (
