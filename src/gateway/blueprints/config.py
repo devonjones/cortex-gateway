@@ -239,9 +239,10 @@ def validate_config() -> Response | tuple[Response, int]:
                 400,
             )
 
-        # Count components
+        # Count components. chains are ChainConfig objects (rules live on
+        # .rules); iterating a ChainConfig directly raises "no len()".
         chain_count = len(config.chains)
-        rule_count = sum(len(rules) for rules in config.chains.values())
+        rule_count = sum(len(chain.rules) for chain in config.chains.values())
         priority_mappings = len(config.priority_email_mappings)
         fallback_mappings = len(config.fallback_email_mappings)
 
@@ -410,7 +411,7 @@ def diff_versions(v1: int, v2: int) -> Response | tuple[Response, int]:
                 "added": added_lines[:100],  # Limit to first 100 for API response
                 "removed": removed_lines[:100],
                 "note": (
-                    "Use GET /config/versions/{v} to download full YAML " "for detailed comparison"
+                    "Use GET /config/versions/{v} to download full YAML for detailed comparison"
                 ),
             }
         )
