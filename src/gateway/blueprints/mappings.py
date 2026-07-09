@@ -24,10 +24,13 @@ MAPPING_CHANGE_REPROCESS_PRIORITY = -200
 # Delay before the re-enqueued jobs become claimable. A mapping change enqueues
 # the sender's mail AND signals the triage worker to reload mappings in one
 # transaction; without this delay the worker can claim the jobs before it
-# processes the reload signal and re-triage against stale mappings (the sender
+# processes the reload signal and re-triages against stale mappings (the sender
 # falls through to the default label). Holding the jobs a short while guarantees
 # the worker's mappings_reload (polled once per batch, seconds) lands first.
-# See cortex-tczh.
+# NOTE: this relies on a single triage worker — signals are single-consumer
+# (FOR UPDATE SKIP LOCKED), so a second replica could claim the delayed jobs
+# without having reloaded. Horizontal scaling would need the deterministic
+# "worker re-enqueues on reload" approach instead. See cortex-tczh.
 MAPPING_CHANGE_REPROCESS_DELAY_SECONDS = int(
     os.environ.get("MAPPING_CHANGE_REPROCESS_DELAY_SECONDS", "60")
 )
