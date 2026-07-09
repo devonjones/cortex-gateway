@@ -4,6 +4,7 @@ Provides CRUD operations for priority and fallback email mappings.
 Changes to mappings automatically trigger targeted re-enqueue by sender.
 """
 
+import os
 from typing import Any
 
 from cortex_utils.logging import get_logger
@@ -19,6 +20,20 @@ mappings_bp = Blueprint("mappings", __name__)
 # Priority for re-processing emails when mappings change
 # Lower than default (0) and backfill (-100) to avoid blocking real-time processing
 MAPPING_CHANGE_REPROCESS_PRIORITY = -200
+
+# Delay before the re-enqueued jobs become claimable. A mapping change enqueues
+# the sender's mail AND signals the triage worker to reload mappings in one
+# transaction; without this delay the worker can claim the jobs before it
+# processes the reload signal and re-triages against stale mappings (the sender
+# falls through to the default label). Holding the jobs a short while guarantees
+# the worker's mappings_reload (polled once per batch, seconds) lands first.
+# NOTE: this relies on a single triage worker — signals are single-consumer
+# (FOR UPDATE SKIP LOCKED), so a second replica could claim the delayed jobs
+# without having reloaded. Horizontal scaling would need the deterministic
+# "worker re-enqueues on reload" approach instead. See cortex-tczh.
+MAPPING_CHANGE_REPROCESS_DELAY_SECONDS = int(
+    os.environ.get("MAPPING_CHANGE_REPROCESS_DELAY_SECONDS", "60")
+)
 
 
 @mappings_bp.route("", methods=["GET"])
@@ -278,7 +293,7 @@ def update_mapping(mapping_id: int) -> Response | tuple[Response, int]:
                 # Update mapping and get data for side-effects
                 query = f"""
                     UPDATE triage_email_mappings
-                    SET {', '.join(updates)}
+                    SET {", ".join(updates)}
                     WHERE id = %s AND deleted_at IS NULL
                     RETURNING *
                 """
@@ -483,9 +498,14 @@ def _enqueue_sender_for_reprocess(
     Returns:
         Number of rows enqueued
     """
+    # next_attempt_at holds the jobs until after the worker's mappings_reload
+    # (which the caller signals in the same transaction) so re-triage sees the
+    # fresh mapping, not the stale one. See MAPPING_CHANGE_REPROCESS_DELAY_SECONDS.
     cursor.execute(
         """
-        INSERT INTO queue (queue_name, payload, priority, status, created_at)
+        INSERT INTO queue (
+            queue_name, payload, priority, status, created_at, next_attempt_at
+        )
         SELECT DISTINCT ON (er.gmail_id)
             'triage',
             jsonb_build_object(
@@ -496,7 +516,8 @@ def _enqueue_sender_for_reprocess(
             ),
             %s,
             'pending',
-            NOW()
+            NOW(),
+            NOW() + (INTERVAL '1 second' * %s)
         FROM emails_raw er
         JOIN emails_parsed ep ON ep.gmail_id = er.gmail_id
         WHERE LOWER(ep.from_addr) = LOWER(%s)
@@ -507,7 +528,7 @@ def _enqueue_sender_for_reprocess(
               AND q.status IN ('pending', 'processing')
         )
         """,
-        (priority, email_address),
+        (priority, MAPPING_CHANGE_REPROCESS_DELAY_SECONDS, email_address),
     )
 
     return cursor.rowcount
