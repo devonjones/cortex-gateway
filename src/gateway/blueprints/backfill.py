@@ -120,9 +120,14 @@ def cancel_backfill():
     if not queue_name:
         return jsonify({"error": "queue parameter required"}), 400
 
+    # No updated_at on queue -- the column has never existed, in this schema or
+    # in cortex_utils.queue.schema.REQUIRED_COLUMNS, so this statement raised
+    # UndefinedColumn and the endpoint has always returned 500. completed_at is
+    # the column that records when a row reached a terminal state, and
+    # 'cancelled' is one.
     update_query = """
         UPDATE queue
-        SET status = 'cancelled', updated_at = NOW()
+        SET status = 'cancelled', completed_at = NOW()
         WHERE queue_name = %s
         AND priority < 0
         AND status = 'pending'

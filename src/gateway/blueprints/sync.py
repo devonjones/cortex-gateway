@@ -176,7 +176,11 @@ def cancel_sync_backfill_job(job_id: str) -> Response | tuple[Response, int]:
         WHERE id = %s AND status IN ('pending', 'running')
         RETURNING id, status
     """
-    results = postgres.execute_query(update_query, (job_id,))
+    # execute_update, not execute_query: execute_query never commits, and
+    # ConnectionContext only rolls back on an exception, so psycopg2's pool
+    # rolled this back on putconn. The endpoint returned the RETURNING rows and
+    # a 200 while persisting nothing.
+    results = postgres.execute_update_returning(update_query, (job_id,))
 
     if not results:
         # Check if job exists but wasn't cancellable
