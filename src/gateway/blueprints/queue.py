@@ -94,13 +94,24 @@ def retry_failed(job_id: int) -> Response | tuple[Response, int]:
     if job["status"] != "failed":
         return jsonify({"error": f"Job is not failed (current status: {job['status']})"}), 400
 
-    # Reset to pending, releasing the claim with it. A failed row can still be
-    # carrying claimed_at/claimed_by from the attempt that failed it, and a row
-    # back on the pending pile still certified to a previous worker lets that
-    # worker -- if it was merely slow rather than dead -- report on a job the
-    # next claimant has since picked up. The same fix landed at six sites in
-    # postmark and triage; these two were missed because the audit enumerated
-    # those repos and cortex-utils, and not this one.
+    # Reset to pending, releasing the claim with it.
+    #
+    # Not because a stalled worker can complete() a pending row -- it cannot;
+    # that statement requires status='processing' as well as a matching token,
+    # and ops.fail_or_retry() clears both columns when it retires a row, so a
+    # canonically-failed row carries no token to inherit in the first place.
+    #
+    # It matters when the next claimant sets status='processing' WITHOUT
+    # writing its own token, because then the stale token survives into the
+    # processing state and the previous worker's complete() matches. That is
+    # not hypothetical: every cortex worker hand-writes its claim today and
+    # none of them set claimed_by. So this guard is for the partially-ported
+    # fleet -- one service claiming through ops.claim(), another not -- which
+    # is the window the port opens and closes.
+    #
+    # The same fix landed at six sites in postmark and triage; these two were
+    # missed because the audit enumerated those repos and cortex-utils, and not
+    # this one.
     update_query = """
         UPDATE queue
         SET status = 'pending', last_error = NULL, attempts = 0,
