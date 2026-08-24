@@ -94,10 +94,17 @@ def retry_failed(job_id: int) -> Response | tuple[Response, int]:
     if job["status"] != "failed":
         return jsonify({"error": f"Job is not failed (current status: {job['status']})"}), 400
 
-    # Reset to pending
+    # Reset to pending, releasing the claim with it. A failed row can still be
+    # carrying claimed_at/claimed_by from the attempt that failed it, and a row
+    # back on the pending pile still certified to a previous worker lets that
+    # worker -- if it was merely slow rather than dead -- report on a job the
+    # next claimant has since picked up. The same fix landed at six sites in
+    # postmark and triage; these two were missed because the audit enumerated
+    # those repos and cortex-utils, and not this one.
     update_query = """
         UPDATE queue
-        SET status = 'pending', last_error = NULL, attempts = 0
+        SET status = 'pending', last_error = NULL, attempts = 0,
+            claimed_at = NULL, claimed_by = NULL
         WHERE id = %s
     """
     postgres.execute_update(update_query, (job_id,))
@@ -151,7 +158,8 @@ def retry_all_failed():
 
     update_query = """
         UPDATE queue
-        SET status = 'pending', last_error = NULL, attempts = 0
+        SET status = 'pending', last_error = NULL, attempts = 0,
+            claimed_at = NULL, claimed_by = NULL
         WHERE status = 'failed' AND queue_name = %s
     """
     count = postgres.execute_update(update_query, (queue_name,))
