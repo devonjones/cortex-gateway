@@ -61,6 +61,24 @@ def execute_query(query: str, params: tuple[Any, ...] | None = None) -> list[dic
             return cur.fetchall()
 
 
+def execute_update_returning(
+    query: str, params: tuple[Any, ...] | None = None
+) -> list[dict[str, Any]]:
+    """An UPDATE/INSERT/DELETE with a RETURNING clause: commits, then returns rows.
+
+    execute_query() does not commit -- it is for SELECTs -- and ConnectionContext
+    only rolls back on an exception, so a write routed through it is rolled back
+    by the pool on putconn. The rows come back and the caller sees a success it
+    did not get. This is the pairing that makes RETURNING safe to use.
+    """
+    with ConnectionContext() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            conn.commit()
+            return rows
+
+
 def execute_one(query: str, params: tuple[Any, ...] | None = None) -> dict[str, Any] | None:
     """Execute a query and return single result as dict."""
     results = execute_query(query, params)
