@@ -35,6 +35,18 @@ class Config:
     oauth_token_path: str = os.environ.get("OAUTH_TOKEN_PATH", "")
     oauth_secret_key: str = os.environ.get("OAUTH_SECRET_KEY", "")
 
+    # API auth. Requests from inside the container network are trusted and
+    # send no credential; anything else must present this token. Unset means
+    # the gateway stays open (and logs a warning at startup).
+    api_token: str = os.environ.get("CORTEX_API_TOKEN", "")
+    trusted_subnets: str = os.environ.get(
+        "CORTEX_TRUSTED_SUBNETS", "172.26.0.0/16,172.29.0.0/16,127.0.0.1/32"
+    )
+    # Port carrying peer traffic. Publish ONLY the external port to the host;
+    # requests arriving on any other port must present the token.
+    internal_port: int = _get_int_env("CORTEX_INTERNAL_PORT", "8080")
+    external_port: int = _get_int_env("CORTEX_EXTERNAL_PORT", "8098")
+
     # Logging
     log_level: str = os.environ.get("LOG_LEVEL", "INFO")
 
