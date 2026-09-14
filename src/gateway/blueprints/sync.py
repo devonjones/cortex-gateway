@@ -22,6 +22,13 @@ def trigger_sync_backfill():
     Request body:
         days: Number of days to backfill (mutually exclusive with after)
         after: ISO date string YYYY-MM-DD to backfill from (mutually exclusive with days)
+        before: Optional ISO date string YYYY-MM-DD bounding the window.
+
+    Without `before`, the Gmail query is open-ended (`after:X`) and re-scans
+    every message from that date to now. For walking history backwards a slice
+    at a time, pass both and each job touches only its own window.
+    `backfill_jobs.before_date` and GmailSync.backfill() have always supported
+    this; only the endpoint did not expose it.
 
     Returns:
         Job details including id for status tracking.
@@ -30,12 +37,23 @@ def trigger_sync_backfill():
 
     days = data.get("days")
     after = data.get("after")
+    before = data.get("before")
 
     if days and after:
         return jsonify({"error": "Provide either 'days' or 'after', not both"}), 400
 
     if not days and not after:
         return jsonify({"error": "Provide either 'days' or 'after' parameter"}), 400
+
+    before_date = None
+    if before:
+        try:
+            before_date = datetime.strptime(str(before), "%Y-%m-%d").date()
+        except ValueError:
+            return (
+                jsonify({"error": f"Invalid date format: '{before}'. Expected YYYY-MM-DD"}),
+                400,
+            )
 
     # Validate and build query string
     if days:
@@ -54,13 +72,24 @@ def trigger_sync_backfill():
                 400,
             )
 
+    if before_date:
+        if before_date <= after_date:
+            return (
+                jsonify({"error": f"before ({before_date}) must be after after ({after_date})"}),
+                400,
+            )
+        query += f" before:{before_date.strftime('%Y/%m/%d')}"
+
     # Insert job into backfill_jobs table
     insert_query = """
-        INSERT INTO backfill_jobs (query, days, after_date)
-        VALUES (%s, %s, %s)
-        RETURNING id, status, query, days, after_date, created_at
+        INSERT INTO backfill_jobs (query, days, after_date, before_date)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id, status, query, days, after_date, before_date, created_at
     """
-    results = postgres.execute_query(insert_query, (query, days, after_date.isoformat()))
+    results = postgres.execute_query(
+        insert_query,
+        (query, days, after_date.isoformat(), before_date.isoformat() if before_date else None),
+    )
 
     if not results:
         return jsonify({"error": "Failed to create backfill job"}), 500
@@ -74,6 +103,7 @@ def trigger_sync_backfill():
                 "query": job["query"],
                 "days": job["days"],
                 "after_date": str(job["after_date"]) if job["after_date"] else None,
+                "before_date": str(job["before_date"]) if job["before_date"] else None,
                 "created_at": job["created_at"].isoformat() if job["created_at"] else None,
             }
         ),
