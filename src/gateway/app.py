@@ -47,6 +47,8 @@ def create_app() -> Flask:
         raise ValueError("OAUTH_TOKEN_PATH must be set for production deployments.")
 
     # Require a token for anything arriving from outside the container network
+    # Raises if a token is set without trusted subnets: refusing to start is a
+    # better failure than every peer call beginning to 401 at once.
     init_auth(app, config.api_token, config.trusted_subnets, config.internal_port)
 
     # Apply metrics middleware

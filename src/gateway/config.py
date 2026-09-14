@@ -39,9 +39,9 @@ class Config:
     # send no credential; anything else must present this token. Unset means
     # the gateway stays open (and logs a warning at startup).
     api_token: str = os.environ.get("CORTEX_API_TOKEN", "")
-    trusted_subnets: str = os.environ.get(
-        "CORTEX_TRUSTED_SUBNETS", "172.26.0.0/16,172.29.0.0/16,127.0.0.1/32"
-    )
+    # No default: deployment topology, and this repo is public. Required
+    # whenever api_token is set -- init_auth refuses to start without it.
+    trusted_subnets: str = os.environ.get("CORTEX_TRUSTED_SUBNETS", "")
     # Port carrying peer traffic. Publish ONLY the external port to the host;
     # requests arriving on any other port must present the token.
     internal_port: int = _get_int_env("CORTEX_INTERNAL_PORT", "8080")

@@ -16,9 +16,12 @@ import ipaddress
 
 import pytest
 
-from gateway.auth import DEFAULT_TRUSTED_SUBNETS, _parse_subnets, _presented_token, is_internal
+from gateway.auth import _parse_subnets, _presented_token, is_internal
 
-TRUSTED = _parse_subnets(DEFAULT_TRUSTED_SUBNETS)
+# A fixture topology, not this deployment's. The production values live in
+# CORTEX_TRUSTED_SUBNETS, which is now required rather than defaulted.
+_TRUSTED_FIXTURE = "172.26.0.0/16,172.29.0.0/16,127.0.0.1/32"
+TRUSTED = _parse_subnets(_TRUSTED_FIXTURE)
 
 
 class Headers(dict):
@@ -40,8 +43,14 @@ def test_metrics_network_is_internal() -> None:
 
 
 def test_lan_client_is_external() -> None:
-    """Verified on the deployment: a LAN request keeps its real source IP."""
-    assert not is_internal("10.5.2.12", Headers(), TRUSTED)
+    """A private address outside the peer subnets is still external.
+
+    Verified on the deployment that a LAN request keeps its own source
+    address rather than being masqueraded to the bridge gateway, so this is
+    the shape real LAN traffic arrives in. The address here is a stand-in --
+    the repo is public, so it must not name a real host.
+    """
+    assert not is_internal("10.0.0.99", Headers(), TRUSTED)
 
 
 def test_traefik_subnet_is_not_trusted() -> None:
@@ -101,7 +110,7 @@ def _app(token: str):
     from gateway.auth import init_auth
 
     app = Flask(__name__)
-    init_auth(app, token)
+    init_auth(app, token, _TRUSTED_FIXTURE)
 
     @app.route("/health")
     def health():
@@ -114,7 +123,7 @@ def _app(token: str):
     return app
 
 
-def _get(app, path="/config", addr="10.5.2.12", port=8080, **headers):
+def _get(app, path="/config", addr="10.0.0.99", port=8080, **headers):
     """Werkzeug derives SERVER_PORT from the host, so set it via base_url.
 
     Passing SERVER_PORT in environ_base is silently overwritten -- which is how
@@ -165,7 +174,7 @@ def test_health_is_exempt_so_monitoring_needs_no_credential() -> None:
 def test_writes_are_gated_too() -> None:
     app = _app("s3cret")
     unauth = app.test_client().put(
-        "/config", base_url="http://localhost:8080", environ_base={"REMOTE_ADDR": "10.5.2.12"}
+        "/config", base_url="http://localhost:8080", environ_base={"REMOTE_ADDR": "10.0.0.99"}
     )
     assert unauth.status_code == 401, "PUT /config from the LAN must require a token"
 
@@ -190,7 +199,7 @@ def test_peer_on_the_external_port_still_needs_a_token() -> None:
 
 def test_lan_on_the_internal_port_still_needs_a_token() -> None:
     """Second lock: publishing the internal port by accident must not fail open."""
-    assert not is_internal("10.5.2.12", Headers(), TRUSTED, 8080, 8080)
+    assert not is_internal("10.0.0.99", Headers(), TRUSTED, 8080, 8080)
 
 
 def test_unparseable_port_is_external() -> None:
@@ -208,7 +217,7 @@ def test_gate_end_to_end_rejects_peer_on_external_port() -> None:
     from gateway.auth import init_auth
 
     app = Flask(__name__)
-    init_auth(app, "s3cret", internal_port=8080)
+    init_auth(app, "s3cret", _TRUSTED_FIXTURE, internal_port=8080)
 
     @app.route("/config")
     def cfg():
@@ -222,3 +231,130 @@ def test_gate_end_to_end_rejects_peer_on_external_port() -> None:
     )
     assert peer_internal.status_code == 200
     assert peer_external.status_code == 401
+
+
+# --- exempt-path boundary: the P1 two reviewers found independently ---------
+
+
+def test_exempt_paths_do_not_match_by_bare_prefix() -> None:
+    """`/healthz-admin` must NOT inherit `/health`'s exemption.
+
+    A bare startswith() means any future route whose name merely begins with
+    an exempt one is silently unauthenticated. That is how an auth gate
+    develops a hole nobody edited.
+    """
+    from gateway.auth import _is_exempt
+
+    assert _is_exempt("/health")
+    assert _is_exempt("/health/")
+    assert _is_exempt("/health/deep")
+    assert not _is_exempt("/healthz-admin")
+    assert not _is_exempt("/health-admin")
+    assert not _is_exempt("/healthcheck")
+    assert not _is_exempt("/metricsx")
+
+
+def test_oauth_browser_legs_are_exempt_and_the_rest_are_not() -> None:
+    """Google redirects a BROWSER to /oauth/callback; it cannot send a token.
+
+    /refresh mutates stored credentials and /status is programmatic, so both
+    stay gated.
+    """
+    from gateway.auth import _is_exempt
+
+    assert _is_exempt("/oauth/callback")
+    assert _is_exempt("/oauth/start")
+    assert not _is_exempt("/oauth/refresh")
+    assert not _is_exempt("/oauth/status")
+    assert not _is_exempt("/oauth")
+
+
+def test_gate_allows_the_oauth_callback_without_a_token() -> None:
+    from flask import Flask, jsonify
+
+    from gateway.auth import init_auth
+
+    app = Flask(__name__)
+    init_auth(app, "s3cret", _TRUSTED_FIXTURE, internal_port=8080)
+
+    @app.route("/oauth/callback")
+    def cb():
+        return jsonify(ok=True)
+
+    @app.route("/oauth/refresh", methods=["POST"])
+    def rf():
+        return jsonify(ok=True)
+
+    ext = {"REMOTE_ADDR": "10.0.0.99"}
+    assert (
+        app.test_client()
+        .get("/oauth/callback", base_url="http://localhost:8098", environ_base=ext)
+        .status_code
+        == 200
+    )
+    assert (
+        app.test_client()
+        .post("/oauth/refresh", base_url="http://localhost:8098", environ_base=ext)
+        .status_code
+        == 401
+    )
+
+
+# --- port lock fails closed -------------------------------------------------
+
+
+def test_missing_server_port_is_not_trusted() -> None:
+    """An unknown port must not become an allowed one.
+
+    Previously a missing SERVER_PORT skipped the port check and fell back to
+    address-only trust, contradicting "both locks must hold" in the worst
+    direction.
+    """
+    assert not is_internal("172.26.0.13", Headers(), TRUSTED, None, 8080)
+
+
+# --- IPv6 -------------------------------------------------------------------
+
+
+def test_ipv6_sources() -> None:
+    trusted6 = _parse_subnets("fd00::/8,::1/128")
+    assert is_internal("fd00::1", Headers(), trusted6)
+    assert not is_internal("2001:db8::1", Headers(), trusted6)
+    # An IPv6 source against an IPv4-only trust list is external, not a crash.
+    assert not is_internal("fd00::1", Headers(), TRUSTED)
+    # IPv4-mapped IPv6 must not sneak past an IPv4 trust list.
+    assert not is_internal("::ffff:172.26.0.13", Headers(), TRUSTED)
+
+
+# --- subnet parsing ---------------------------------------------------------
+
+
+def test_parse_subnets_drops_malformed_entries_without_crashing() -> None:
+    nets = _parse_subnets("172.26.0.0/16, not-a-subnet, ,999.0.0.1/8,127.0.0.1/32")
+    assert len(nets) == 2, "valid entries survive, invalid are dropped"
+    assert is_internal("172.26.0.5", Headers(), nets, 8080, 8080)
+
+
+def test_empty_trust_list_trusts_nobody() -> None:
+    """Fail closed: an empty list must not mean 'allow all'."""
+    assert not is_internal("172.26.0.13", Headers(), [], 8080, 8080)
+
+
+def test_init_auth_refuses_a_token_without_trusted_subnets() -> None:
+    """Refusing to start beats every peer call failing at once."""
+    import pytest
+    from flask import Flask
+
+    from gateway.auth import init_auth
+
+    with pytest.raises(ValueError, match="CORTEX_TRUSTED_SUBNETS"):
+        init_auth(Flask(__name__), "s3cret", "")
+
+
+def test_no_token_still_starts_without_trusted_subnets() -> None:
+    """The open-gateway path is unchanged, so this can deploy before the token."""
+    from flask import Flask
+
+    from gateway.auth import init_auth
+
+    init_auth(Flask(__name__), "", "")  # must not raise
