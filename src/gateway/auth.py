@@ -175,7 +175,22 @@ def init_auth(
     # usual way -- would never match a correctly-sent credential. The symptom
     # is a total lockout in which the operator's token is demonstrably right
     # and every request still 401s, with nothing in the logs to explain it.
-    token = token.strip()
+    raw_token, token = token, token.strip()
+    if raw_token and not token:
+        # Stripping must never turn "configured" into "unconfigured". An empty
+        # or unpopulated secret file gives CORTEX_API_TOKEN="\n", which strips
+        # to "" -- falsy, so the guard below would not fire and _require_token
+        # would return None on every request. The gate would be GONE, and the
+        # only signal would be a startup line reading "CORTEX_API_TOKEN is
+        # unset", which is both false and points at the wrong problem.
+        #
+        # Same argument as trusted_subnets below: refusing to start is a far
+        # better failure than silently serving an open API.
+        raise ValueError(
+            "CORTEX_API_TOKEN is set but contains only whitespace. This is "
+            "usually an empty or unpopulated secret file. Unset it deliberately "
+            "to run without auth, or give it a real value."
+        )
 
     trusted = _parse_subnets(trusted_subnets)
 

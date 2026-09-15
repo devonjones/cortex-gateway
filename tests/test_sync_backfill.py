@@ -274,28 +274,44 @@ def test_fetching_one_backfill_job_returns_before_date(client) -> None:
     assert r.get_json()["before_date"] == "2025-01-02"
 
 
-def test_both_backfill_selects_ask_for_before_date() -> None:
-    """The serialiser cannot return a column the query never fetched.
+def test_both_backfill_routes_issue_sql_that_fetches_before_date(client) -> None:
+    """Assert on the SQL the routes actually issue, not on the source text.
 
-    A KeyError here would surface as a 500 rather than a missing field, but
-    only once a real database is involved -- the patched tests above would
-    still pass. Cheap to pin statically.
+    A serialiser cannot return a column the query never fetched, and with the
+    column list now shared this is the one place the two could still come
+    apart. Capturing the executed SQL survives refactoring of how the query is
+    built -- the previous version read the inline SELECT out of the source and
+    broke the moment the columns moved into a constant, which is exactly the
+    brittleness that makes people delete a test.
     """
-    import re
-    from pathlib import Path
+    seen: list[str] = []
 
+    def capture(query, params):
+        seen.append(query)
+        return [_job_row()]
+
+    with patch("gateway.blueprints.sync.postgres.execute_query", capture):
+        assert client.get("/sync/backfill").status_code == 200
+        assert client.get("/sync/backfill/job-9").status_code == 200
+
+    assert len(seen) == 2, "expected the list and single-job queries"
+    for sql in seen:
+        assert "after_date" in sql, f"query does not fetch after_date: {sql}"
+        assert "before_date" in sql, (
+            "query fetches after_date without before_date -- a job with only a "
+            f"lower bound is what the walker mistakes for open-ended: {sql}"
+        )
+
+
+def test_the_two_routes_share_one_job_serialiser() -> None:
+    """Two hand-maintained copies is what let before_date go missing twice.
+
+    Both routes drifted in the same direction because the serialiser was
+    duplicated. Pin the single definition so a future edit to one route cannot
+    silently diverge from the other.
+    """
     import gateway.blueprints.sync as _sync
 
-    source = Path(_sync.__file__).read_text(encoding="utf-8")
-    selects = re.findall(r"SELECT\s+.*?FROM\s+backfill_jobs", source, re.DOTALL)
-    # Pair the bounds rather than counting statements: a third SELECT here
-    # fetches only (id, status) for the cancel endpoint and rightly needs
-    # neither bound. The invariant is that anything reporting the lower bound
-    # also reports the upper one -- a job with an after_date and no
-    # before_date is precisely what the walker mistakes for open-ended.
-    windowed = [sql for sql in selects if "after_date" in sql]
-    assert windowed, "no SELECT fetches after_date -- has this endpoint moved?"
-    for sql in windowed:
-        assert (
-            "before_date" in sql
-        ), f"a SELECT fetches after_date without before_date: {' '.join(sql.split())[:90]}..."
+    assert hasattr(_sync, "_serialise_job")
+    assert "before_date" in _sync._JOB_COLUMNS
+    assert "after_date" in _sync._JOB_COLUMNS

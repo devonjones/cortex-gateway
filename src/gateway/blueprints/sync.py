@@ -7,6 +7,7 @@ Flow: CLI/Gateway -> backfill_jobs table -> gmail-sync polls and executes
 """
 
 from datetime import datetime, timedelta
+from typing import Any
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -115,6 +116,49 @@ def trigger_sync_backfill():
     )
 
 
+_JOB_COLUMNS = (
+    "id, status, query, days, after_date, before_date, processed, "
+    "stored, updated, error, created_at, started_at, completed_at"
+)
+
+
+def _serialise_job(row: dict[str, Any]) -> dict[str, Any]:
+    """One shape for a backfill job, shared by the list and single-job routes.
+
+    These were two hand-maintained copies of the same serialiser, and they
+    drifted in the same direction: both omitted before_date, which the
+    cortex-utils backfill walker filters on. Every job therefore looked
+    open-ended, the walker's watermark could never advance, and it would have
+    re-queued the same month nightly forever while reporting success.
+
+    A second copy of a serialiser is a second place to forget a column, so
+    there is now one. The column list is shared for the same reason -- a
+    serialiser cannot return what the query never fetched.
+    """
+
+    def _date(value: object) -> str | None:
+        return str(value) if value else None
+
+    def _stamp(value: object) -> str | None:
+        return value.isoformat() if value else None  # type: ignore[attr-defined]
+
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "query": row["query"],
+        "days": row["days"],
+        "after_date": _date(row["after_date"]),
+        "before_date": _date(row["before_date"]),
+        "processed": row["processed"],
+        "stored": row["stored"],
+        "updated": row["updated"],
+        "error": row["error"],
+        "created_at": _stamp(row["created_at"]),
+        "started_at": _stamp(row["started_at"]),
+        "completed_at": _stamp(row["completed_at"]),
+    }
+
+
 @sync_bp.route("/backfill", methods=["GET"])
 def list_sync_backfill_jobs():
     """List recent backfill jobs.
@@ -126,9 +170,8 @@ def list_sync_backfill_jobs():
     limit = request.args.get("limit", 20, type=int)
     status = request.args.get("status")
 
-    query = """
-        SELECT id, status, query, days, after_date, before_date, processed,
-               stored, updated, error, created_at, started_at, completed_at
+    query = f"""
+        SELECT {_JOB_COLUMNS}
         FROM backfill_jobs
     """
     params: list[str | int] = []
@@ -142,40 +185,14 @@ def list_sync_backfill_jobs():
 
     results = postgres.execute_query(query, tuple(params))
 
-    jobs = []
-    for row in results:
-        jobs.append(
-            {
-                "id": row["id"],
-                "status": row["status"],
-                "query": row["query"],
-                "days": row["days"],
-                "after_date": str(row["after_date"]) if row["after_date"] else None,
-                # The backfill walker derives its watermark from completed
-                # WINDOWED jobs, so it needs both bounds. Omitting this made
-                # every job look open-ended: the walker's window filter matched
-                # nothing, the watermark never left the seed, and it re-queued
-                # the same month every night while reporting success.
-                "before_date": str(row["before_date"]) if row["before_date"] else None,
-                "processed": row["processed"],
-                "stored": row["stored"],
-                "updated": row["updated"],
-                "error": row["error"],
-                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
-                "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
-            }
-        )
-
-    return jsonify({"jobs": jobs})
+    return jsonify({"jobs": [_serialise_job(row) for row in results]})
 
 
 @sync_bp.route("/backfill/<job_id>", methods=["GET"])
 def get_sync_backfill_job(job_id: str) -> Response | tuple[Response, int]:
     """Get status of a specific backfill job."""
-    query = """
-        SELECT id, status, query, days, after_date, before_date, processed,
-               stored, updated, error, created_at, started_at, completed_at
+    query = f"""
+        SELECT {_JOB_COLUMNS}
         FROM backfill_jobs
         WHERE id = %s
     """
@@ -184,29 +201,7 @@ def get_sync_backfill_job(job_id: str) -> Response | tuple[Response, int]:
     if not results:
         return jsonify({"error": "Job not found"}), 404
 
-    row = results[0]
-    return jsonify(
-        {
-            "id": row["id"],
-            "status": row["status"],
-            "query": row["query"],
-            "days": row["days"],
-            "after_date": str(row["after_date"]) if row["after_date"] else None,
-            # The backfill walker derives its watermark from completed
-            # WINDOWED jobs, so it needs both bounds. Omitting this made
-            # every job look open-ended: the walker's window filter matched
-            # nothing, the watermark never left the seed, and it re-queued
-            # the same month every night while reporting success.
-            "before_date": str(row["before_date"]) if row["before_date"] else None,
-            "processed": row["processed"],
-            "stored": row["stored"],
-            "updated": row["updated"],
-            "error": row["error"],
-            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-            "started_at": row["started_at"].isoformat() if row["started_at"] else None,
-            "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
-        }
-    )
+    return jsonify(_serialise_job(results[0]))
 
 
 @sync_bp.route("/backfill/<job_id>/cancel", methods=["POST"])

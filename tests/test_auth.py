@@ -44,14 +44,30 @@ def reloaded_gateway():
     """
     import importlib
     import os
+    import sys
 
     import gateway.app
     import gateway.config
 
     saved_env = dict(os.environ)
 
+    # Every module that did `from gateway.config import config` holds its own
+    # reference to the OLD instance, so reloading gateway.config alone leaves
+    # them bound to a stale one. Latent today -- the stale instance holds
+    # pristine values -- but it is the same vacuity class as the bug this
+    # fixture exists to fix, one module over. Reload the bindings too.
+    _config_importers = (
+        "gateway.services.postgres",
+        "gateway.services.duckdb",
+        "gateway.blueprints.oauth",
+    )
+
     def _reload():
         importlib.reload(gateway.config)
+        for name in _config_importers:
+            module = sys.modules.get(name)
+            if module is not None:
+                importlib.reload(module)
         importlib.reload(gateway.app)
         return gateway.app
 
@@ -60,8 +76,7 @@ def reloaded_gateway():
     finally:
         os.environ.clear()
         os.environ.update(saved_env)
-        importlib.reload(gateway.config)
-        importlib.reload(gateway.app)
+        _reload()
 
 
 TRUSTED = _parse_subnets(_TRUSTED_FIXTURE)
@@ -655,3 +670,59 @@ def test_a_configured_token_with_surrounding_whitespace_still_authenticates() ->
     assert (
         client.get("/thing", base_url="http://localhost:8098", environ_base=ext).status_code == 401
     ), "stripping must not weaken the gate"
+
+
+def test_a_whitespace_only_token_refuses_to_boot_rather_than_disabling_auth() -> None:
+    """Stripping must not turn "configured" into "unconfigured".
+
+    CORTEX_API_TOKEN=$(cat secret) against an empty secret file yields "\\n".
+    Stripped, that is "" -- falsy -- so the trusted-subnets guard would not
+    fire and _require_token would return None for every request: the gate
+    silently gone, announced by a startup log line saying the token is unset,
+    which is false and points at the wrong problem.
+
+    Introduced by the round 5 strip fix; found by round 6 review. Fail closed.
+    """
+    from flask import Flask
+
+    from gateway.auth import init_auth
+
+    for blank in ("\n", "   ", "\t\n "):
+        app = Flask(__name__)
+        with pytest.raises(ValueError, match="only whitespace"):
+            init_auth(app, blank, _TRUSTED_FIXTURE, internal_port=8080)
+
+
+def test_a_whitespace_only_token_does_not_slip_past_the_trusted_subnets_guard() -> None:
+    """The startup guard must still fire, not be bypassed by the blank token.
+
+    `init_auth(token="\\n", trusted_subnets="")` previously booted, where
+    `init_auth(token="s3cret", trusted_subnets="")` correctly raises.
+    """
+    from flask import Flask
+
+    from gateway.auth import init_auth
+
+    with pytest.raises(ValueError):
+        init_auth(Flask(__name__), "\n", "", internal_port=8080)
+
+
+def test_an_unset_token_still_means_open_access() -> None:
+    """The deliberate no-auth case must keep working: "" is not an error."""
+    from flask import Flask, jsonify
+
+    from gateway.auth import init_auth
+
+    app = Flask(__name__)
+    init_auth(app, "", "", internal_port=8080)
+
+    @app.route("/thing")
+    def thing():
+        return jsonify(ok=True)
+
+    assert (
+        app.test_client()
+        .get("/thing", base_url="http://localhost:8098", environ_base={"REMOTE_ADDR": "10.0.0.99"})
+        .status_code
+        == 200
+    )
