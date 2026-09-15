@@ -6,6 +6,7 @@ from cortex_utils.logging import configure_logging, get_logger
 from cortex_utils.metrics import start_metrics_server
 from flask import Flask
 
+from gateway.auth import init_auth
 from gateway.blueprints import (
     backfill_bp,
     config_bp,
@@ -44,6 +45,11 @@ def create_app() -> Flask:
             message="OAUTH_TOKEN_PATH must be set for production deployments.",
         )
         raise ValueError("OAUTH_TOKEN_PATH must be set for production deployments.")
+
+    # Require a token for anything arriving from outside the container network
+    # Raises if a token is set without trusted subnets: refusing to start is a
+    # better failure than every peer call beginning to 401 at once.
+    init_auth(app, config.api_token, config.trusted_subnets, config.internal_port)
 
     # Apply metrics middleware
     app.wsgi_app = MetricsMiddleware(app.wsgi_app, "cortex-gateway")  # type: ignore[method-assign]

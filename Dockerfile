@@ -23,7 +23,9 @@ USER appuser
 ENV UV_CACHE_DIR=/home/appuser/.cache/uv
 
 # Expose ports
-EXPOSE 8080 8001
+# 8080 = internal (peer traffic, no token). 8098 = external (token required).
+# Publish ONLY 8098 to the host; see processes/gateway-two-port-deploy.md.
+EXPOSE 8080 8098 8001
 
 # Run with gunicorn (single worker to avoid metrics port conflict)
-CMD ["uv", "run", "gunicorn", "-w", "1", "-b", "0.0.0.0:8080", "gateway.app:create_app()"]
+CMD ["uv", "run", "gunicorn", "-w", "1", "-b", "0.0.0.0:8080", "-b", "0.0.0.0:8098", "gateway.app:create_app()"]
