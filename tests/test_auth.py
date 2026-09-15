@@ -254,16 +254,19 @@ def test_exempt_paths_do_not_match_by_bare_prefix() -> None:
     assert not _is_exempt("/metricsx")
 
 
-def test_oauth_browser_legs_are_exempt_and_the_rest_are_not() -> None:
-    """Google redirects a BROWSER to /oauth/callback; it cannot send a token.
+def test_only_the_oauth_callback_is_exempt() -> None:
+    """/oauth/start must NOT be exempt -- that was an account-takeover hole.
 
-    /refresh mutates stored credentials and /status is programmatic, so both
-    stay gated.
+    With both legs open, any caller reaching the external port could drive
+    the whole grant itself: /start, consent as its own Google account, land
+    on /callback, and overwrite the production token -- silently repointing
+    gmail-sync at an attacker's mailbox. The state parameter is no defence
+    when the attacker drives both legs.
     """
     from gateway.auth import _is_exempt
 
     assert _is_exempt("/oauth/callback")
-    assert _is_exempt("/oauth/start")
+    assert not _is_exempt("/oauth/start"), "gating /start is what closes the takeover"
     assert not _is_exempt("/oauth/refresh")
     assert not _is_exempt("/oauth/status")
     assert not _is_exempt("/oauth")
@@ -283,6 +286,10 @@ def test_gate_allows_the_oauth_callback_without_a_token() -> None:
 
     @app.route("/oauth/refresh", methods=["POST"])
     def rf():
+        return jsonify(ok=True)
+
+    @app.route("/oauth/start")
+    def st():
         return jsonify(ok=True)
 
     ext = {"REMOTE_ADDR": "10.0.0.99"}
@@ -358,3 +365,97 @@ def test_no_token_still_starts_without_trusted_subnets() -> None:
     from gateway.auth import init_auth
 
     init_auth(Flask(__name__), "", "")  # must not raise
+
+
+# --- round 2 findings --------------------------------------------------------
+
+
+def test_non_ascii_token_is_rejected_not_a_500() -> None:
+    """hmac.compare_digest raises TypeError on non-ASCII str.
+
+    Before this was fixed, `X-Cortex-Token: café` escaped _require_token as an
+    unhandled exception. Flask turned it into a 500, which still denied the
+    view but discarded the 401 body and the api_auth_rejected audit line, and
+    handed any external caller a one-request way to spray tracebacks.
+    """
+    app = _app("s3cret")
+    for bad in ("café", "tökén", "日本語", "\udcff"):
+        r = _get(app, **{"X-Cortex-Token": bad})
+        assert r.status_code == 401, f"{bad!r} must be a clean 401, not a 500"
+        assert r.get_json()["error"] == "authentication required"
+
+
+def test_a_non_ascii_token_can_still_authenticate() -> None:
+    """Encoding both sides must not break a legitimately non-ASCII token."""
+    app = _app("pàsswörd")
+    assert _get(app, **{"X-Cortex-Token": "pàsswörd"}).status_code == 200
+    assert _get(app, **{"X-Cortex-Token": "pàssword"}).status_code == 401
+
+
+def test_unknown_paths_are_denied_by_default_end_to_end() -> None:
+    """The deny-by-default property, through a real app rather than _is_exempt.
+
+    A refactor that stopped calling _is_exempt() from _require_token would
+    pass the unit tests while reopening the prefix hole. This drives the gate.
+    """
+    from flask import Flask, jsonify
+
+    from gateway.auth import init_auth
+
+    app = Flask(__name__)
+    init_auth(app, "s3cret", _TRUSTED_FIXTURE, internal_port=8080)
+
+    @app.route("/healthz-admin")
+    def healthz_admin():
+        return jsonify(ok=True)
+
+    @app.route("/anything")
+    def anything():
+        return jsonify(ok=True)
+
+    ext = {"REMOTE_ADDR": "10.0.0.99"}
+    for path in ("/healthz-admin", "/anything"):
+        assert (
+            app.test_client()
+            .get(path, base_url="http://localhost:8098", environ_base=ext)
+            .status_code
+            == 401
+        ), f"{path} must be gated"
+        assert (
+            app.test_client()
+            .get(
+                path,
+                base_url="http://localhost:8098",
+                environ_base=ext,
+                headers={"Authorization": "Bearer s3cret"},
+            )
+            .status_code
+            == 200
+        )
+
+
+def test_create_app_refuses_to_boot_without_trusted_subnets(monkeypatch) -> None:
+    """The real startup chain: env var -> config -> create_app -> raise.
+
+    This PR changed config.py's CORTEX_TRUSTED_SUBNETS default to "", which is
+    exactly the input that trips the raise, so the chain is worth exercising
+    rather than only the bare-Flask path.
+    """
+    import importlib
+
+    import pytest
+
+    monkeypatch.setenv("CORTEX_API_TOKEN", "s3cret")
+    monkeypatch.setenv("CORTEX_TRUSTED_SUBNETS", "")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "x")
+    monkeypatch.setenv("OAUTH_SECRET_KEY", "x")
+    monkeypatch.setenv("OAUTH_TOKEN_PATH", "/tmp/t.json")
+
+    import gateway.config
+
+    importlib.reload(gateway.config)
+    import gateway.app
+
+    importlib.reload(gateway.app)
+    with pytest.raises(ValueError, match="CORTEX_TRUSTED_SUBNETS"):
+        gateway.app.create_app()

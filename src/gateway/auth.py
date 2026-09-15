@@ -76,18 +76,27 @@ PROXY_HEADERS = ("X-Forwarded-For", "X-Real-IP", "Forwarded")
 # future route whose name merely begins with an exempt one would silently
 # punch a hole in the gate.
 #
-# /oauth/start and /oauth/callback are the two browser-redirect legs of the
-# Gmail OAuth grant. Google redirects the USER'S BROWSER to /oauth/callback,
-# and a browser redirect cannot carry an Authorization header -- gating them
-# breaks the flow outright rather than merely inconveniencing it. /callback
-# has its own CSRF protection (a state parameter tied to the Flask session),
-# and /start only redirects to Google's consent screen; neither grants
-# anything on its own.
+# ONLY /oauth/callback is exempt, and only because Google redirects the
+# USER'S BROWSER to it -- a redirect structurally cannot carry an
+# Authorization header, so gating it breaks the grant outright.
 #
-# /oauth/refresh and /oauth/status are deliberately NOT exempt: they are
-# programmatic, callable with a token, and /refresh mutates stored
-# credentials.
-EXEMPT_PATHS = ("/health", "/metrics", "/oauth/start", "/oauth/callback")
+# /oauth/start was exempt in an earlier revision of this file and that was a
+# VULNERABILITY, not a convenience. /start is a plain GET with no
+# caller-supplied credential, so with both legs open any host that could
+# reach the external port could drive the whole flow itself: hit /start,
+# consent as its OWN Google account, land on the exempt /callback, and have
+# _save_token() overwrite the production token -- silently repointing
+# gmail-sync at an attacker's mailbox. The state parameter does not help,
+# because an attacker driving both legs controls both sides of it.
+#
+# With /start gated, /callback alone is safe: it requires a session state
+# value that only /start sets, so a caller who cannot reach /start cannot
+# produce a callback that validates.
+#
+# Operators are not locked out. _require_token() treats internal requests as
+# trusted before it ever reaches the token check, so the flow can still be
+# driven from inside the container network; from outside it needs the token.
+EXEMPT_PATHS = ("/health", "/metrics", "/oauth/callback")
 
 
 def _is_exempt(path: str) -> bool:
@@ -204,7 +213,16 @@ def init_auth(
             return None
 
         presented = _presented_token(request.headers)
-        if presented and hmac.compare_digest(presented, token):
+        # Compare BYTES. hmac.compare_digest raises TypeError on a str with
+        # non-ASCII characters, so a header of `X-Cortex-Token: café` escaped
+        # this function as an unhandled exception: Flask turned it into a 500,
+        # discarding both the intended 401 body and the api_auth_rejected
+        # audit line, and handing any external caller a one-request way to
+        # spray tracebacks into the logs.
+        if presented and hmac.compare_digest(
+            presented.encode("utf-8", "surrogatepass"),
+            token.encode("utf-8", "surrogatepass"),
+        ):
             return None
 
         # Log the attempt, never the token. remote_addr is attacker-influenced,
