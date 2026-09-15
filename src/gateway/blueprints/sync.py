@@ -46,7 +46,11 @@ def trigger_sync_backfill():
         return jsonify({"error": "Provide either 'days' or 'after' parameter"}), 400
 
     before_date = None
-    if before:
+    # `is not None`, not a truthiness test: `before: ""` would otherwise fall
+    # through as "no bound" and silently produce the open-ended scan this
+    # parameter exists to prevent. A present-but-empty value is a client bug,
+    # so let it fail the parse below rather than changing the window's shape.
+    if before is not None:
         try:
             before_date = datetime.strptime(str(before), "%Y-%m-%d").date()
         except ValueError:

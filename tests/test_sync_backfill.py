@@ -115,3 +115,83 @@ def test_an_open_ended_window_still_works(client) -> None:
     body = r.get_json()
     assert body["before_date"] is None
     assert "before:" not in body["query"]
+
+
+# --- the `days` + `before` combination: round 4 ------------------------------
+#
+# `days` and `before` are NOT mutually exclusive -- only `days` and `after`
+# are -- so this branch is reachable, and it is the one where the window's
+# lower bound is computed rather than supplied. Round 4 review showed it had
+# zero coverage: changing the guard to `if before_date and after:` left all
+# seven tests green while letting {"days": 7, "before": "2020-01-01"} return
+# 201 with an inverted window. That is exactly the silent watermark advance
+# this file's docstring exists to prevent.
+
+
+def test_days_with_an_inverted_before_is_rejected(client) -> None:
+    """`days` computes after_date; `before` must still sit after it."""
+    r = _post(client, {"days": 7, "before": "2020-01-01"})
+    assert r.status_code == 400
+    assert "before" in r.get_json()["error"]
+
+
+def test_days_with_a_valid_before_bounds_the_query(client) -> None:
+    from datetime import date, timedelta
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    def fake_execute_query(query, params):
+        return [
+            {
+                "id": "job-3",
+                "status": "pending",
+                "query": params[0],
+                "days": params[1],
+                "after_date": params[2],
+                "before_date": params[3],
+                "created_at": None,
+            }
+        ]
+
+    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+        r = _post(client, {"days": 7, "before": tomorrow})
+
+    assert r.status_code == 201
+    body = r.get_json()
+    assert body["before_date"] == tomorrow
+    assert "before:" in body["query"], "a days-based window must still honour before"
+
+
+def test_an_empty_before_is_rejected_rather_than_silently_unbounded(client) -> None:
+    """`before: ""` must not degrade into an open-ended scan.
+
+    A falsy check treats present-but-empty as absent, which turns a bounded
+    request into the unbounded one the caller was trying to avoid -- silently,
+    and reported as success.
+    """
+    r = _post(client, {"after": "2024-12-01", "before": ""})
+    assert r.status_code == 400
+    assert "Invalid date format" in r.get_json()["error"]
+
+
+def test_an_explicit_null_before_is_still_open_ended(client) -> None:
+    """JSON null means "no bound", which is a supported request."""
+
+    def fake_execute_query(query, params):
+        return [
+            {
+                "id": "job-4",
+                "status": "pending",
+                "query": params[0],
+                "days": params[1],
+                "after_date": params[2],
+                "before_date": params[3],
+                "created_at": None,
+            }
+        ]
+
+    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+        r = _post(client, {"after": "2024-12-01", "before": None})
+
+    assert r.status_code == 201
+    assert r.get_json()["before_date"] is None

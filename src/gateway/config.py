@@ -44,8 +44,15 @@ class Config:
     trusted_subnets: str = os.environ.get("CORTEX_TRUSTED_SUBNETS", "")
     # Port carrying peer traffic. Publish ONLY the external port to the host;
     # requests arriving on any other port must present the token.
+    #
+    # The BINDS are Dockerfile literals -- gunicorn's -b flags -- so this is
+    # the gate's view of which of them is internal, not a way to move them.
+    # Change it only alongside the Dockerfile; test_config_internal_port_
+    # matches_a_port_the_dockerfile_binds fails if the two drift.
+    #
+    # There is deliberately no `external_port`: nothing read it, so
+    # CORTEX_EXTERNAL_PORT was a knob that silently did nothing.
     internal_port: int = _get_int_env("CORTEX_INTERNAL_PORT", "8080")
-    external_port: int = _get_int_env("CORTEX_EXTERNAL_PORT", "8098")
 
     # Logging
     log_level: str = os.environ.get("LOG_LEVEL", "INFO")

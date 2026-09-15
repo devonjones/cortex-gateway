@@ -13,6 +13,7 @@ live, AND no proxy header may be present.
 from __future__ import annotations
 
 import ipaddress
+from unittest.mock import patch
 
 import pytest
 
@@ -480,3 +481,96 @@ def test_create_app_refuses_to_boot_without_trusted_subnets(monkeypatch) -> None
     importlib.reload(gateway.app)
     with pytest.raises(ValueError, match="CORTEX_TRUSTED_SUBNETS"):
         gateway.app.create_app()
+
+
+def test_create_app_binds_the_gate_to_the_internal_port_not_the_external_one(
+    monkeypatch,
+) -> None:
+    """The real wiring, which every other port test bypasses.
+
+    Round 4 review: swapping `config.internal_port` for `config.external_port`
+    at the single `init_auth()` call site passes the whole suite while
+    INVERTING the trust boundary -- the gate would trust the published port
+    and 401 every peer. All the other port tests pass `internal_port=8080` as
+    a literal to a bare Flask app, so none of them ever sees that call.
+
+    The gate runs in before_request, ahead of routing, so an unknown path is
+    enough to read it: 401 means the gate challenged, 404 means it let the
+    request through to routing. No database, no real route.
+    """
+    import importlib
+
+    monkeypatch.setenv("CORTEX_API_TOKEN", "s3cret")
+    monkeypatch.setenv("CORTEX_TRUSTED_SUBNETS", "172.26.0.0/16")
+    monkeypatch.setenv("CORTEX_INTERNAL_PORT", "8080")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "x")
+    monkeypatch.setenv("OAUTH_SECRET_KEY", "x")
+    monkeypatch.setenv("OAUTH_TOKEN_PATH", "/tmp/t.json")
+
+    import gateway.config
+
+    importlib.reload(gateway.config)
+    import gateway.app
+
+    importlib.reload(gateway.app)
+
+    # create_app() also opens the Postgres pool and binds the metrics port.
+    # Neither is what this test is about, and both need infrastructure.
+    with (
+        patch("gateway.app.init_pool"),
+        patch("gateway.app.start_metrics_server"),
+    ):
+        app = gateway.app.create_app()
+
+    peer = {"REMOTE_ADDR": "172.26.0.13"}
+    client = app.test_client()
+
+    assert (
+        client.get(
+            "/_no_such_path", base_url="http://localhost:8080", environ_base=peer
+        ).status_code
+        == 404
+    ), "a peer on the INTERNAL port must reach routing without a token"
+    assert (
+        client.get(
+            "/_no_such_path", base_url="http://localhost:8098", environ_base=peer
+        ).status_code
+        == 401
+    ), "the same peer on the EXTERNAL port must be challenged"
+
+
+def test_config_internal_port_matches_a_port_the_dockerfile_binds() -> None:
+    """The gate's port and gunicorn's binds must not drift apart.
+
+    `internal_port` decides which socket is trusted; the Dockerfile's `-b`
+    flags decide which sockets exist. They are configured in different files
+    with no link between them, so setting CORTEX_INTERNAL_PORT to a port
+    nothing binds silently makes every request external -- a gate that 401s
+    the whole pipeline, with no error at startup to say why.
+
+    Round 4 review flagged this as unguarded after CORTEX_EXTERNAL_PORT was
+    found to be dead config.
+    """
+    import re
+    from pathlib import Path
+
+    import gateway.config as _config_module
+
+    # src/gateway/config.py -> parents[2] IS the repo root. (An extra .parent
+    # here walked out into the multi-repo tree, which is how the utils suite
+    # broke in CI one round ago -- same mistake, different direction.)
+    dockerfile = Path(_config_module.__file__).resolve().parents[2] / "Dockerfile"
+    assert dockerfile.is_file(), f"expected a Dockerfile at {dockerfile}"
+
+    bound = {int(p) for p in re.findall(r"-b[\"',\s]+0\.0\.0\.0:(\d+)", dockerfile.read_text())}
+    assert bound, "no gunicorn -b binds found in the Dockerfile"
+
+    default_internal = _config_module.Config().internal_port
+    assert default_internal in bound, (
+        f"internal_port default {default_internal} is not bound by the Dockerfile "
+        f"(binds: {sorted(bound)}). The gate would treat every request as external."
+    )
+    assert len(bound) >= 2, (
+        "the two-port split needs both an internal and an external bind; "
+        f"Dockerfile binds only {sorted(bound)}"
+    )
