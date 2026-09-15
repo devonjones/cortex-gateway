@@ -127,8 +127,8 @@ def list_sync_backfill_jobs():
     status = request.args.get("status")
 
     query = """
-        SELECT id, status, query, days, after_date, processed, stored, updated,
-               error, created_at, started_at, completed_at
+        SELECT id, status, query, days, after_date, before_date, processed,
+               stored, updated, error, created_at, started_at, completed_at
         FROM backfill_jobs
     """
     params: list[str | int] = []
@@ -151,6 +151,12 @@ def list_sync_backfill_jobs():
                 "query": row["query"],
                 "days": row["days"],
                 "after_date": str(row["after_date"]) if row["after_date"] else None,
+                # The backfill walker derives its watermark from completed
+                # WINDOWED jobs, so it needs both bounds. Omitting this made
+                # every job look open-ended: the walker's window filter matched
+                # nothing, the watermark never left the seed, and it re-queued
+                # the same month every night while reporting success.
+                "before_date": str(row["before_date"]) if row["before_date"] else None,
                 "processed": row["processed"],
                 "stored": row["stored"],
                 "updated": row["updated"],
@@ -168,8 +174,8 @@ def list_sync_backfill_jobs():
 def get_sync_backfill_job(job_id: str) -> Response | tuple[Response, int]:
     """Get status of a specific backfill job."""
     query = """
-        SELECT id, status, query, days, after_date, processed, stored, updated,
-               error, created_at, started_at, completed_at
+        SELECT id, status, query, days, after_date, before_date, processed,
+               stored, updated, error, created_at, started_at, completed_at
         FROM backfill_jobs
         WHERE id = %s
     """
@@ -186,6 +192,12 @@ def get_sync_backfill_job(job_id: str) -> Response | tuple[Response, int]:
             "query": row["query"],
             "days": row["days"],
             "after_date": str(row["after_date"]) if row["after_date"] else None,
+            # The backfill walker derives its watermark from completed
+            # WINDOWED jobs, so it needs both bounds. Omitting this made
+            # every job look open-ended: the walker's window filter matched
+            # nothing, the watermark never left the seed, and it re-queued
+            # the same month every night while reporting success.
+            "before_date": str(row["before_date"]) if row["before_date"] else None,
             "processed": row["processed"],
             "stored": row["stored"],
             "updated": row["updated"],

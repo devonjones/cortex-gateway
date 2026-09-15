@@ -22,6 +22,48 @@ from gateway.auth import _parse_subnets, _presented_token, is_internal
 # A fixture topology, not this deployment's. The production values live in
 # CORTEX_TRUSTED_SUBNETS, which is now required rather than defaulted.
 _TRUSTED_FIXTURE = "172.26.0.0/16,172.29.0.0/16,127.0.0.1/32"
+
+
+@pytest.fixture
+def reloaded_gateway():
+    """Reload gateway.config + gateway.app under the test's env, then undo it.
+
+    Config's fields are dataclass CLASS-BODY defaults, read from os.environ at
+    import time. So `importlib.reload(gateway.config)` with CORTEX_INTERNAL_PORT
+    set bakes that value into the class for the REST OF THE SESSION -- monkeypatch
+    restores the environment variable, but not the class attribute built from it.
+
+    Round 5 proved the damage: the port test injected 8080, and
+    test_config_internal_port_matches_a_port_the_dockerfile_binds, sixty lines
+    later, then read the injected value instead of config.py's real default.
+    Mutating that default to a port nothing binds -- exactly the drift the test
+    exists to catch, which would 401 the entire pipeline -- left the whole suite
+    GREEN. It failed only in isolation, and CI runs the whole suite.
+
+    So reloading is a fixture with a teardown, never a bare call in a test.
+    """
+    import importlib
+    import os
+
+    import gateway.app
+    import gateway.config
+
+    saved_env = dict(os.environ)
+
+    def _reload():
+        importlib.reload(gateway.config)
+        importlib.reload(gateway.app)
+        return gateway.app
+
+    try:
+        yield _reload
+    finally:
+        os.environ.clear()
+        os.environ.update(saved_env)
+        importlib.reload(gateway.config)
+        importlib.reload(gateway.app)
+
+
 TRUSTED = _parse_subnets(_TRUSTED_FIXTURE)
 
 
@@ -456,35 +498,26 @@ def test_unknown_paths_are_denied_by_default_end_to_end() -> None:
         )
 
 
-def test_create_app_refuses_to_boot_without_trusted_subnets(monkeypatch) -> None:
+def test_create_app_refuses_to_boot_without_trusted_subnets(monkeypatch, reloaded_gateway) -> None:
     """The real startup chain: env var -> config -> create_app -> raise.
 
     This PR changed config.py's CORTEX_TRUSTED_SUBNETS default to "", which is
     exactly the input that trips the raise, so the chain is worth exercising
     rather than only the bare-Flask path.
     """
-    import importlib
-
-    import pytest
-
     monkeypatch.setenv("CORTEX_API_TOKEN", "s3cret")
     monkeypatch.setenv("CORTEX_TRUSTED_SUBNETS", "")
     monkeypatch.setenv("POSTGRES_PASSWORD", "x")
     monkeypatch.setenv("OAUTH_SECRET_KEY", "x")
     monkeypatch.setenv("OAUTH_TOKEN_PATH", "/tmp/t.json")
 
-    import gateway.config
-
-    importlib.reload(gateway.config)
-    import gateway.app
-
-    importlib.reload(gateway.app)
+    gateway_app = reloaded_gateway()
     with pytest.raises(ValueError, match="CORTEX_TRUSTED_SUBNETS"):
-        gateway.app.create_app()
+        gateway_app.create_app()
 
 
 def test_create_app_binds_the_gate_to_the_internal_port_not_the_external_one(
-    monkeypatch,
+    monkeypatch, reloaded_gateway
 ) -> None:
     """The real wiring, which every other port test bypasses.
 
@@ -498,8 +531,6 @@ def test_create_app_binds_the_gate_to_the_internal_port_not_the_external_one(
     enough to read it: 401 means the gate challenged, 404 means it let the
     request through to routing. No database, no real route.
     """
-    import importlib
-
     monkeypatch.setenv("CORTEX_API_TOKEN", "s3cret")
     monkeypatch.setenv("CORTEX_TRUSTED_SUBNETS", "172.26.0.0/16")
     monkeypatch.setenv("CORTEX_INTERNAL_PORT", "8080")
@@ -507,12 +538,7 @@ def test_create_app_binds_the_gate_to_the_internal_port_not_the_external_one(
     monkeypatch.setenv("OAUTH_SECRET_KEY", "x")
     monkeypatch.setenv("OAUTH_TOKEN_PATH", "/tmp/t.json")
 
-    import gateway.config
-
-    importlib.reload(gateway.config)
-    import gateway.app
-
-    importlib.reload(gateway.app)
+    gateway_app = reloaded_gateway()
 
     # create_app() also opens the Postgres pool and binds the metrics port.
     # Neither is what this test is about, and both need infrastructure.
@@ -520,7 +546,7 @@ def test_create_app_binds_the_gate_to_the_internal_port_not_the_external_one(
         patch("gateway.app.init_pool"),
         patch("gateway.app.start_metrics_server"),
     ):
-        app = gateway.app.create_app()
+        app = gateway_app.create_app()
 
     peer = {"REMOTE_ADDR": "172.26.0.13"}
     client = app.test_client()
@@ -539,7 +565,9 @@ def test_create_app_binds_the_gate_to_the_internal_port_not_the_external_one(
     ), "the same peer on the EXTERNAL port must be challenged"
 
 
-def test_config_internal_port_matches_a_port_the_dockerfile_binds() -> None:
+def test_config_internal_port_matches_a_port_the_dockerfile_binds(
+    monkeypatch, reloaded_gateway
+) -> None:
     """The gate's port and gunicorn's binds must not drift apart.
 
     `internal_port` decides which socket is trusted; the Dockerfile's `-b`
@@ -554,6 +582,12 @@ def test_config_internal_port_matches_a_port_the_dockerfile_binds() -> None:
     import re
     from pathlib import Path
 
+    # Read the default with the env var ABSENT, under the fixture's managed
+    # reload. Without this the test reads whatever a previous test's reload
+    # baked into the class -- which is how it went vacuous.
+    monkeypatch.delenv("CORTEX_INTERNAL_PORT", raising=False)
+    reloaded_gateway()
+
     import gateway.config as _config_module
 
     # src/gateway/config.py -> parents[2] IS the repo root. (An extra .parent
@@ -562,7 +596,18 @@ def test_config_internal_port_matches_a_port_the_dockerfile_binds() -> None:
     dockerfile = Path(_config_module.__file__).resolve().parents[2] / "Dockerfile"
     assert dockerfile.is_file(), f"expected a Dockerfile at {dockerfile}"
 
-    bound = {int(p) for p in re.findall(r"-b[\"',\s]+0\.0\.0\.0:(\d+)", dockerfile.read_text())}
+    # Accept the forms gunicorn actually takes, not just the one in the file
+    # today: -b / --bind, = or space or quote separated, and any host part
+    # (0.0.0.0, [::], a hostname, or none at all). The narrow version failed
+    # CLOSED on a reformatted CMD -- safe, but it would have cried drift at
+    # someone who changed nothing that matters.
+    bound = {
+        int(p)
+        for p in re.findall(
+            r"(?:-b|--bind)[=\"',\s]+(?:[\w.]+|\[[0-9a-fA-F:]+\])?:(\d+)",
+            dockerfile.read_text(),
+        )
+    }
     assert bound, "no gunicorn -b binds found in the Dockerfile"
 
     default_internal = _config_module.Config().internal_port
@@ -574,3 +619,39 @@ def test_config_internal_port_matches_a_port_the_dockerfile_binds() -> None:
         "the two-port split needs both an internal and an external bind; "
         f"Dockerfile binds only {sorted(bound)}"
     )
+
+
+def test_a_configured_token_with_surrounding_whitespace_still_authenticates() -> None:
+    """Both sides must be stripped, or neither.
+
+    The extractor strips what the client presents. A configured token carrying
+    a trailing newline -- CORTEX_API_TOKEN=$(cat secret), the ordinary way to
+    load one -- could therefore never match a correctly-sent credential. The
+    operator sees every request 401 with a token they can see is right, and
+    nothing in the logs says why.
+    """
+    from flask import Flask, jsonify
+
+    from gateway.auth import init_auth
+
+    app = Flask(__name__)
+    init_auth(app, "s3cret\n", _TRUSTED_FIXTURE, internal_port=8080)
+
+    @app.route("/thing")
+    def thing():
+        return jsonify(ok=True)
+
+    ext = {"REMOTE_ADDR": "10.0.0.99"}
+    client = app.test_client()
+    assert (
+        client.get(
+            "/thing",
+            base_url="http://localhost:8098",
+            environ_base=ext,
+            headers={"Authorization": "Bearer s3cret"},
+        ).status_code
+        == 200
+    ), "a trailing newline in CORTEX_API_TOKEN must not lock everyone out"
+    assert (
+        client.get("/thing", base_url="http://localhost:8098", environ_base=ext).status_code == 401
+    ), "stripping must not weaken the gate"

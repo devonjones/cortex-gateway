@@ -195,3 +195,107 @@ def test_an_explicit_null_before_is_still_open_ended(client) -> None:
 
     assert r.status_code == 201
     assert r.get_json()["before_date"] is None
+
+
+# --- GET must return before_date: the round 5 P1 -----------------------------
+#
+# The backfill walker derives its watermark from COMPLETED WINDOWED jobs --
+# those with both an after_date and a before_date. GET /sync/backfill selected
+# and serialised neither bound's upper half, so every job came back looking
+# open-ended, the walker's filter matched nothing, and the watermark never left
+# the seed. It would have re-queued the same month every night, forever,
+# reporting success each run.
+#
+# Verified against the live gateway before the fix: 9 jobs, 9 with after_date,
+# 0 with before_date. Nothing in either repo's tests noticed, because the
+# walker's own tests synthesise job dicts rather than reading a real payload.
+# This is a CONTRACT between two repos, so it is asserted on the producing side.
+
+
+def _job_row(**over):
+    from datetime import date
+
+    row = {
+        "id": "job-9",
+        "status": "completed",
+        "query": "after:2024/12/01 before:2025/01/02",
+        "days": None,
+        "after_date": date(2024, 12, 1),
+        "before_date": date(2025, 1, 2),
+        "processed": 10,
+        "stored": 10,
+        "updated": 0,
+        "error": None,
+        "created_at": None,
+        "started_at": None,
+        "completed_at": None,
+    }
+    row.update(over)
+    return row
+
+
+def test_listing_backfill_jobs_returns_before_date(client) -> None:
+    with patch(
+        "gateway.blueprints.sync.postgres.execute_query",
+        lambda q, p: [_job_row()],
+    ):
+        r = client.get("/sync/backfill")
+
+    assert r.status_code == 200
+    job = r.get_json()["jobs"][0]
+    assert job["before_date"] == "2025-01-02", (
+        "the walker filters on before_date; without it every job looks "
+        "open-ended and the watermark never advances"
+    )
+    assert job["after_date"] == "2024-12-01"
+
+
+def test_listing_an_open_ended_job_reports_before_date_as_null(client) -> None:
+    """Open-ended jobs must be distinguishable from windowed ones, not absent."""
+    with patch(
+        "gateway.blueprints.sync.postgres.execute_query",
+        lambda q, p: [_job_row(before_date=None)],
+    ):
+        r = client.get("/sync/backfill")
+
+    job = r.get_json()["jobs"][0]
+    assert "before_date" in job, "the key must be present even when null"
+    assert job["before_date"] is None
+
+
+def test_fetching_one_backfill_job_returns_before_date(client) -> None:
+    with patch(
+        "gateway.blueprints.sync.postgres.execute_query",
+        lambda q, p: [_job_row()],
+    ):
+        r = client.get("/sync/backfill/job-9")
+
+    assert r.status_code == 200
+    assert r.get_json()["before_date"] == "2025-01-02"
+
+
+def test_both_backfill_selects_ask_for_before_date() -> None:
+    """The serialiser cannot return a column the query never fetched.
+
+    A KeyError here would surface as a 500 rather than a missing field, but
+    only once a real database is involved -- the patched tests above would
+    still pass. Cheap to pin statically.
+    """
+    import re
+    from pathlib import Path
+
+    import gateway.blueprints.sync as _sync
+
+    source = Path(_sync.__file__).read_text(encoding="utf-8")
+    selects = re.findall(r"SELECT\s+.*?FROM\s+backfill_jobs", source, re.DOTALL)
+    # Pair the bounds rather than counting statements: a third SELECT here
+    # fetches only (id, status) for the cancel endpoint and rightly needs
+    # neither bound. The invariant is that anything reporting the lower bound
+    # also reports the upper one -- a job with an after_date and no
+    # before_date is precisely what the walker mistakes for open-ended.
+    windowed = [sql for sql in selects if "after_date" in sql]
+    assert windowed, "no SELECT fetches after_date -- has this endpoint moved?"
+    for sql in windowed:
+        assert (
+            "before_date" in sql
+        ), f"a SELECT fetches after_date without before_date: {' '.join(sql.split())[:90]}..."

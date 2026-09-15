@@ -169,6 +169,14 @@ def init_auth(
     mean no request is ever internal, so every peer call would start failing
     at once. Refusing to start is a better failure than that.
     """
+    # Strip the CONFIGURED token too, not just the presented one. The
+    # extractor strips what the client sends, so a token set from a file or a
+    # heredoc -- `CORTEX_API_TOKEN=$(cat secret)` with a trailing newline, the
+    # usual way -- would never match a correctly-sent credential. The symptom
+    # is a total lockout in which the operator's token is demonstrably right
+    # and every request still 401s, with nothing in the logs to explain it.
+    token = token.strip()
+
     trusted = _parse_subnets(trusted_subnets)
 
     if token and not trusted:
