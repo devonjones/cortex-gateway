@@ -60,6 +60,13 @@ def reloaded_gateway():
         "gateway.services.postgres",
         "gateway.services.duckdb",
         "gateway.blueprints.oauth",
+        # ...and the package that re-exports the blueprint objects. Reloading
+        # blueprints.oauth alone mints a NEW Blueprint while
+        # gateway/blueprints/__init__.py keeps re-exporting the old one, so
+        # create_app() registers the stale object and the reload of that entry
+        # achieves nothing. Same shape as the bug this fixture exists to fix,
+        # one level up the package.
+        "gateway.blueprints",
     )
 
     def _reload():
