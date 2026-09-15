@@ -305,6 +305,27 @@ def test_gate_allows_the_oauth_callback_without_a_token() -> None:
         .status_code
         == 401
     )
+    # The takeover leg. /oauth/start must be refused unauthenticated from
+    # outside: with it exempt, any caller reaching the external port could
+    # drive the whole grant and overwrite the stored token.
+    assert (
+        app.test_client()
+        .get("/oauth/start", base_url="http://localhost:8098", environ_base=ext)
+        .status_code
+        == 401
+    )
+    # ...while an operator inside the container network can still drive it,
+    # via _require_token()'s internal bypass rather than an exemption.
+    assert (
+        app.test_client()
+        .get(
+            "/oauth/start",
+            base_url="http://localhost:8080",
+            environ_base={"REMOTE_ADDR": "172.26.0.13"},
+        )
+        .status_code
+        == 200
+    )
 
 
 # --- port lock fails closed -------------------------------------------------
