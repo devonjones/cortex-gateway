@@ -359,41 +359,105 @@ def test_the_insert_goes_through_the_committing_helper() -> None:
     with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake):
         r = app.test_client().post("/sync/backfill", json={"after": "2024-12-01"})
 
-    assert r.status_code == 201
+    # This assert FIRST: if the INSERT is routed back through execute_query,
+    # the fake is never called and the endpoint 500s, so asserting the status
+    # first would report "assert 500 == 201" and never reach the sentence
+    # explaining why.
     assert "INSERT INTO backfill_jobs" in str(called.get("query", "")), (
         "the INSERT must be routed through execute_update_returning, which "
-        "commits; execute_query does not, and the pool discards the write"
+        "commits; execute_query does not, and the pool discards the write "
+        "on putconn while RETURNING still reports success"
     )
+    assert r.status_code == 201
 
 
-def test_no_write_in_this_blueprint_uses_the_non_committing_helper() -> None:
-    """Static sweep, so a future INSERT/UPDATE cannot regress the same way.
+def test_no_write_anywhere_uses_a_non_committing_helper() -> None:
+    """AST sweep of every blueprint, not a regex over one file.
 
-    Checks the pairing directly: any SQL string handed to execute_query must
-    not be a write.
+    The regex version this replaces had three demonstrated false negatives,
+    each verified by mutation:
+
+      * SQL in a normal string rather than a triple-quoted one -- the pattern
+        required f?\"\"\", and `check_query = "SELECT ..."` already exists in
+        this very file;
+      * SQL passed inline instead of through a variable;
+      * a SHADOWED name -- the search was file-wide and took the FIRST
+        assignment, so a new handler writing `query = \"\"\"INSERT ...\"\"\"`
+        resolved to an earlier SELECT and passed. That is exactly the
+        regression the test claims to prevent, under the commonest variable
+        name in the file.
+
+    It also covered one file while the helper serves six blueprints. Resolving
+    names per enclosing function closes all of it.
     """
-    import re
+    import ast
     from pathlib import Path
 
-    import gateway.blueprints.sync as _sync
+    import gateway.blueprints as _bp
 
-    source = Path(_sync.__file__).read_text(encoding="utf-8")
-    offenders = []
-    for m in re.finditer(r"execute_query\(\s*([A-Za-z_]+)\s*,", source):
-        var = m.group(1)
-        # (?<![A-Za-z_]) or "query" also matches "insert_query = \"\"\"INSERT ...",
-        # which reported the POST's own INSERT as a violation of the GET SELECTs.
-        assign = re.search(
-            rf"(?<![A-Za-z_]){re.escape(var)}\s*=\s*(?:f?\"\"\")(.*?)(?:\"\"\")",
-            source,
-            re.DOTALL,
-        )
-        body = (assign.group(1) if assign else "").upper()
-        if re.search(r"\b(INSERT|UPDATE|DELETE)\b", body):
-            offenders.append(f"{var} (line {source[:m.start()].count(chr(10)) + 1})")
+    non_committing = {"execute_query", "execute_one"}
+    write_verbs = ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "TRUNCATE")
+    offenders: list[str] = []
+
+    def sql_of(node: ast.AST, scope: dict[str, str]) -> str:
+        """Best-effort SQL text for a call argument."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return scope.get(node.id, "")
+        if isinstance(node, ast.JoinedStr):  # f-string
+            return "".join(
+                v.value
+                for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return sql_of(node.left, scope) + sql_of(node.right, scope)
+        return ""
+
+    for path in sorted(Path(_bp.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for func in [
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+        ]:
+            scope: dict[str, str] = {}
+            # SOURCE order, not ast.walk order. ast.walk is breadth-first, so
+            # a name assigned twice in one function resolved to whichever
+            # assignment the traversal happened to reach last -- which let the
+            # shadowed-`query` case pass, the exact hole this replaced the
+            # regex version to close. Sorting by position restores the
+            # last-assignment-before-the-call semantics that matter here.
+            ordered = sorted(
+                (n for n in ast.walk(func) if isinstance(n, ast.Assign | ast.AugAssign | ast.Call)),
+                key=lambda n: (n.lineno, n.col_offset),
+            )
+            for node in ordered:
+                if isinstance(node, ast.Assign | ast.AugAssign):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for t in targets:
+                        if isinstance(t, ast.Name):
+                            text = sql_of(node.value, scope)
+                            scope[t.id] = (
+                                scope.get(t.id, "") + text
+                                if isinstance(node, ast.AugAssign)
+                                else text
+                            )
+                if isinstance(node, ast.Call):
+                    fn = node.func
+                    name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                    if name in non_committing and node.args:
+                        body = sql_of(node.args[0], scope).upper()
+                        if any(
+                            f" {w} " in f" {body} " or body.strip().startswith(w)
+                            for w in write_verbs
+                        ):
+                            verb = next(w for w in write_verbs if w in body)
+                            offenders.append(f"{path.name}:{node.lineno} {verb} via {name}()")
 
     assert not offenders, (
-        f"write(s) routed through the non-committing execute_query: {offenders}. "
-        "Use execute_update_returning -- execute_query never commits, so the "
-        "pool discards the write while RETURNING still reports success."
+        "write(s) routed through a non-committing helper: "
+        + "; ".join(offenders)
+        + ". Use execute_update_returning -- execute_query and execute_one "
+        "never commit, so the pool discards the write on putconn while "
+        "RETURNING still reports success."
     )
