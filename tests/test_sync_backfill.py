@@ -81,7 +81,7 @@ def test_a_valid_window_reaches_the_database_with_before_date(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"after": "2024-12-01", "before": "2025-01-02"})
 
     assert r.status_code == 201
@@ -108,7 +108,7 @@ def test_an_open_ended_window_still_works(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"after": "2024-12-01"})
 
     assert r.status_code == 201
@@ -153,7 +153,7 @@ def test_days_with_a_valid_before_bounds_the_query(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"days": 7, "before": tomorrow})
 
     assert r.status_code == 201
@@ -190,7 +190,7 @@ def test_an_explicit_null_before_is_still_open_ended(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"after": "2024-12-01", "before": None})
 
     assert r.status_code == 201
@@ -315,3 +315,85 @@ def test_the_two_routes_share_one_job_serialiser() -> None:
     assert hasattr(_sync, "_serialise_job")
     assert "before_date" in _sync._JOB_COLUMNS
     assert "after_date" in _sync._JOB_COLUMNS
+
+
+# --- the insert must COMMIT: the production bug of 2026-09-16 ---------------
+#
+# POST /sync/backfill used postgres.execute_query for its INSERT ... RETURNING.
+# execute_query does not commit -- it is for SELECTs -- and ConnectionContext
+# only rolls back on an exception, so the pool discarded the INSERT on
+# putconn. RETURNING still produced a row, so the endpoint answered 201 with a
+# job id for a job that was never written.
+#
+# The nightly walker logged "queued <uuid>" ten times against an unchanged
+# backfill_jobs table. Nothing caught it because every test above patches the
+# very function whose real behaviour was wrong -- mocking the bug out of
+# existence. These two tests do not.
+
+
+def test_the_insert_goes_through_the_committing_helper() -> None:
+    """Pin the helper by name, since the two differ only in whether they commit.
+
+    Patching execute_update_returning is itself the guard: route the INSERT
+    back through execute_query and this fake is never called, so the test
+    fails rather than silently passing on a mock that no longer matches.
+    """
+    called: dict[str, object] = {}
+
+    def fake(query, params):
+        called["query"] = query
+        return [
+            {
+                "id": "job-c",
+                "status": "pending",
+                "query": params[0],
+                "days": params[1],
+                "after_date": params[2],
+                "before_date": params[3],
+                "created_at": None,
+            }
+        ]
+
+    app = Flask(__name__)
+    app.register_blueprint(sync_bp, url_prefix="/sync")
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake):
+        r = app.test_client().post("/sync/backfill", json={"after": "2024-12-01"})
+
+    assert r.status_code == 201
+    assert "INSERT INTO backfill_jobs" in str(called.get("query", "")), (
+        "the INSERT must be routed through execute_update_returning, which "
+        "commits; execute_query does not, and the pool discards the write"
+    )
+
+
+def test_no_write_in_this_blueprint_uses_the_non_committing_helper() -> None:
+    """Static sweep, so a future INSERT/UPDATE cannot regress the same way.
+
+    Checks the pairing directly: any SQL string handed to execute_query must
+    not be a write.
+    """
+    import re
+    from pathlib import Path
+
+    import gateway.blueprints.sync as _sync
+
+    source = Path(_sync.__file__).read_text(encoding="utf-8")
+    offenders = []
+    for m in re.finditer(r"execute_query\(\s*([A-Za-z_]+)\s*,", source):
+        var = m.group(1)
+        # (?<![A-Za-z_]) or "query" also matches "insert_query = \"\"\"INSERT ...",
+        # which reported the POST's own INSERT as a violation of the GET SELECTs.
+        assign = re.search(
+            rf"(?<![A-Za-z_]){re.escape(var)}\s*=\s*(?:f?\"\"\")(.*?)(?:\"\"\")",
+            source,
+            re.DOTALL,
+        )
+        body = (assign.group(1) if assign else "").upper()
+        if re.search(r"\b(INSERT|UPDATE|DELETE)\b", body):
+            offenders.append(f"{var} (line {source[:m.start()].count(chr(10)) + 1})")
+
+    assert not offenders, (
+        f"write(s) routed through the non-committing execute_query: {offenders}. "
+        "Use execute_update_returning -- execute_query never commits, so the "
+        "pool discards the write while RETURNING still reports success."
+    )
