@@ -81,7 +81,7 @@ def test_a_valid_window_reaches_the_database_with_before_date(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"after": "2024-12-01", "before": "2025-01-02"})
 
     assert r.status_code == 201
@@ -108,7 +108,7 @@ def test_an_open_ended_window_still_works(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"after": "2024-12-01"})
 
     assert r.status_code == 201
@@ -153,7 +153,7 @@ def test_days_with_a_valid_before_bounds_the_query(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"days": 7, "before": tomorrow})
 
     assert r.status_code == 201
@@ -190,7 +190,7 @@ def test_an_explicit_null_before_is_still_open_ended(client) -> None:
             }
         ]
 
-    with patch("gateway.blueprints.sync.postgres.execute_query", fake_execute_query):
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake_execute_query):
         r = _post(client, {"after": "2024-12-01", "before": None})
 
     assert r.status_code == 201
@@ -315,3 +315,149 @@ def test_the_two_routes_share_one_job_serialiser() -> None:
     assert hasattr(_sync, "_serialise_job")
     assert "before_date" in _sync._JOB_COLUMNS
     assert "after_date" in _sync._JOB_COLUMNS
+
+
+# --- the insert must COMMIT: the production bug of 2026-09-16 ---------------
+#
+# POST /sync/backfill used postgres.execute_query for its INSERT ... RETURNING.
+# execute_query does not commit -- it is for SELECTs -- and ConnectionContext
+# only rolls back on an exception, so the pool discarded the INSERT on
+# putconn. RETURNING still produced a row, so the endpoint answered 201 with a
+# job id for a job that was never written.
+#
+# The nightly walker logged "queued <uuid>" ten times against an unchanged
+# backfill_jobs table. Nothing caught it because every test above patches the
+# very function whose real behaviour was wrong -- mocking the bug out of
+# existence. These two tests do not.
+
+
+def test_the_insert_goes_through_the_committing_helper() -> None:
+    """Pin the helper by name, since the two differ only in whether they commit.
+
+    Patching execute_update_returning is itself the guard: route the INSERT
+    back through execute_query and this fake is never called, so the test
+    fails rather than silently passing on a mock that no longer matches.
+    """
+    called: dict[str, object] = {}
+
+    def fake(query, params):
+        called["query"] = query
+        return [
+            {
+                "id": "job-c",
+                "status": "pending",
+                "query": params[0],
+                "days": params[1],
+                "after_date": params[2],
+                "before_date": params[3],
+                "created_at": None,
+            }
+        ]
+
+    app = Flask(__name__)
+    app.register_blueprint(sync_bp, url_prefix="/sync")
+    with patch("gateway.blueprints.sync.postgres.execute_update_returning", fake):
+        r = app.test_client().post("/sync/backfill", json={"after": "2024-12-01"})
+
+    # This assert FIRST: if the INSERT is routed back through execute_query,
+    # the fake is never called and the endpoint 500s, so asserting the status
+    # first would report "assert 500 == 201" and never reach the sentence
+    # explaining why.
+    assert "INSERT INTO backfill_jobs" in str(called.get("query", "")), (
+        "the INSERT must be routed through execute_update_returning, which "
+        "commits; execute_query does not, and the pool discards the write "
+        "on putconn while RETURNING still reports success"
+    )
+    assert r.status_code == 201
+
+
+def test_no_write_anywhere_uses_a_non_committing_helper() -> None:
+    """AST sweep of every blueprint, not a regex over one file.
+
+    The regex version this replaces had three demonstrated false negatives,
+    each verified by mutation:
+
+      * SQL in a normal string rather than a triple-quoted one -- the pattern
+        required f?\"\"\", and `check_query = "SELECT ..."` already exists in
+        this very file;
+      * SQL passed inline instead of through a variable;
+      * a SHADOWED name -- the search was file-wide and took the FIRST
+        assignment, so a new handler writing `query = \"\"\"INSERT ...\"\"\"`
+        resolved to an earlier SELECT and passed. That is exactly the
+        regression the test claims to prevent, under the commonest variable
+        name in the file.
+
+    It also covered one file while the helper serves six blueprints. Resolving
+    names per enclosing function closes all of it.
+    """
+    import ast
+    from pathlib import Path
+
+    import gateway.blueprints as _bp
+
+    non_committing = {"execute_query", "execute_one"}
+    write_verbs = ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "TRUNCATE")
+    offenders: list[str] = []
+
+    def sql_of(node: ast.AST, scope: dict[str, str]) -> str:
+        """Best-effort SQL text for a call argument."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return scope.get(node.id, "")
+        if isinstance(node, ast.JoinedStr):  # f-string
+            return "".join(
+                v.value
+                for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return sql_of(node.left, scope) + sql_of(node.right, scope)
+        return ""
+
+    for path in sorted(Path(_bp.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for func in [
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+        ]:
+            scope: dict[str, str] = {}
+            # SOURCE order, not ast.walk order. ast.walk is breadth-first, so
+            # a name assigned twice in one function resolved to whichever
+            # assignment the traversal happened to reach last -- which let the
+            # shadowed-`query` case pass, the exact hole this replaced the
+            # regex version to close. Sorting by position restores the
+            # last-assignment-before-the-call semantics that matter here.
+            ordered = sorted(
+                (n for n in ast.walk(func) if isinstance(n, ast.Assign | ast.AugAssign | ast.Call)),
+                key=lambda n: (n.lineno, n.col_offset),
+            )
+            for node in ordered:
+                if isinstance(node, ast.Assign | ast.AugAssign):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for t in targets:
+                        if isinstance(t, ast.Name):
+                            text = sql_of(node.value, scope)
+                            scope[t.id] = (
+                                scope.get(t.id, "") + text
+                                if isinstance(node, ast.AugAssign)
+                                else text
+                            )
+                if isinstance(node, ast.Call):
+                    fn = node.func
+                    name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                    if name in non_committing and node.args:
+                        body = sql_of(node.args[0], scope).upper()
+                        if any(
+                            f" {w} " in f" {body} " or body.strip().startswith(w)
+                            for w in write_verbs
+                        ):
+                            verb = next(w for w in write_verbs if w in body)
+                            offenders.append(f"{path.name}:{node.lineno} {verb} via {name}()")
+
+    assert not offenders, (
+        "write(s) routed through a non-committing helper: "
+        + "; ".join(offenders)
+        + ". Use execute_update_returning -- execute_query and execute_one "
+        "never commit, so the pool discards the write on putconn while "
+        "RETURNING still reports success."
+    )

@@ -91,7 +91,16 @@ def trigger_sync_backfill():
         VALUES (%s, %s, %s, %s)
         RETURNING id, status, query, days, after_date, before_date, created_at
     """
-    results = postgres.execute_query(
+    # execute_update_returning, NOT execute_query. execute_query does not
+    # commit -- it is for SELECTs -- and ConnectionContext only rolls back on
+    # an exception, so the pool discards the INSERT on putconn. RETURNING
+    # still hands back a row, so this endpoint answered 201 with a job id for
+    # a job that was never written.
+    #
+    # Found in production 2026-09-16: the nightly walker reported
+    # "queued <uuid>" ten times and backfill_jobs never gained a row. Every
+    # test here patched execute_query itself, so no test could see it.
+    results = postgres.execute_update_returning(
         insert_query,
         (query, days, after_date.isoformat(), before_date.isoformat() if before_date else None),
     )
